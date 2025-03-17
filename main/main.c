@@ -1,0 +1,822 @@
+
+/*------------------------------------ INCLUDE LIBRARY ------------------------------------ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <inttypes.h>
+#include <sys/param.h>
+#include <sys/time.h>
+
+#include "sdkconfig.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_cpu.h"
+#include "esp_mem.h"
+#include "esp_event.h"
+#include "esp_sleep.h"
+#include "esp_timer.h"
+#include "esp_chip_info.h"
+#include "esp_pm.h"
+
+#include "esp_flash.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include "esp_attr.h"
+#include <spi_flash_mmap.h>
+#include "esp_wifi.h"
+#include "esp_wifi_types.h"
+#include "esp_tls.h"
+#include "esp_ota_ops.h"
+#include "esp_eap_client.h"
+#include "esp_smartconfig.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
+
+#include "driver/gpio.h"
+#include "driver/uart.h"
+#include "driver/i2c.h"
+#include "driver/spi_common.h"
+#include "esp_spiffs.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/timers.h"
+#include "freertos/queue.h"
+#include "freertos/ringbuf.h"
+#include "freertos/event_groups.h"
+#include "sdkconfig.h"
+
+#include "sdcard.h"
+#include "DS3231Time.h"
+#include "datamanager.h"
+#include "DeviceManager.h"
+#include "sntp_sync.h"
+#include "ADS111x.h"
+#include "sht3x.h"
+#include "pcf8574.h"
+#include "pcf8575.h"
+#include "button.h"
+#include "FileServer.h"
+#include "esp_lcd_ili9341.h"
+#include "extended_ili9341.h"
+#include "ui/ui.h"
+#include "main_common.h"
+
+/*------------------------------------ DEFINE ------------------------------------ */
+
+__attribute__((unused)) static const char *TAG = "Main";
+
+#define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(1000 / portTICK_PERIOD_MS)
+#define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
+#define SAMPLING_TIMME (TickType_t)(200000 / portTICK_PERIOD_MS)
+
+#define NO_WAIT (TickType_t)(0)
+#define WAIT_10_TICK (TickType_t)(10 / portTICK_PERIOD_MS)
+#define WAIT_100_TICK (TickType_t)(100 / portTICK_PERIOD_MS)
+
+#define QUEUE_SIZE 10U
+#define DATA_SENSOR_MIDLEWARE_QUEUE_SIZE 20
+
+#define WIFI_AVAIABLE_BIT BIT0
+#define WIFI_DISCONNECT_BIT BIT1
+
+#define FILE_RENAME_NEWFILE BIT2
+
+#define BUTTON_PRESSED_BIT BIT1
+
+TaskHandle_t getDataFromSensorTask_handle = NULL;
+TaskHandle_t saveDataSensorToSDcardTask_handle = NULL;
+TaskHandle_t sntp_syncTimeTask_handle = NULL;
+TaskHandle_t allocateDataForMultipleQueuesTask_handle = NULL;
+TaskHandle_t smartConfigTask_handle = NULL;
+
+SemaphoreHandle_t getDataSensor_semaphore = NULL;
+SemaphoreHandle_t SDcard_semaphore = NULL;
+SemaphoreHandle_t writeDataToSDcardNoWifi_semaphore = NULL;
+
+QueueHandle_t dataSensorSentToSD_queue = NULL;
+// QueueHandle_t moduleError_queue = NULL;
+QueueHandle_t nameFileSaveDataNoWiFi_queue = NULL;
+QueueHandle_t dataSensorMidleware_queue = NULL;
+
+// Event group
+static EventGroupHandle_t fileStore_eventGroup;
+static EventGroupHandle_t button_event;
+EventGroupHandle_t wifi_control_eventGroup;
+EventGroupHandle_t wifi_control_eventGroup;
+EventGroupHandle_t measure_control_eventGroup;
+
+static char nameFileSaveData[21] = {0};
+static const char base_path[] = MOUNT_POINT;
+
+/*------------------------------------ Define devices ------------------------------------ */
+static i2c_dev_t ds3231_device = {0};
+static i2c_dev_t ads111x_devices[CONFIG_ADS111X_DEVICE_COUNT] = {0};
+static sht3x_t sht30_sensor = {0};
+// static i2c_dev_t pcf8574_device = {0};
+static i2c_dev_t pcf8575_device = {0};
+
+// I2C addresses for ADS1115
+const uint8_t addresses[CONFIG_ADS111X_DEVICE_COUNT] = {
+    ADS111X_ADDR_SDA,
+    ADS111X_ADDR_GND};
+
+/*------------------------------------ WIFI ------------------------------------ */
+// Define Wi-Fi
+#define WIFI_connect_max_attemp_number CONFIG_MAX_RECONNECT_ATTEMP_NUMBER
+static const char *SC_TAG = "SMART CONFIG";
+static smartconfig_start_config_t smart_cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+static uint8_t attemp_count = 0;
+bool change_AP = false;
+bool press_to_change_AP = false;
+bool is_connected = false;
+static uint8_t attemp_count_1 = 0;
+static wifi_config_t wifi_config;
+uint8_t old_ssid[32] = CONFIG_DEFAULT_AP_SSID;
+uint8_t old_password[64] = CONFIG_DEFAULT_AP_PASSWORD;
+uint8_t old_bssid[6] = {0x34, 0xE8, 0x94, 0xF6, 0xAA, 0xD7};
+
+/**
+ * @brief Manage wifi state base on event from wifi_control_eventGroup
+ * WIFI_OFF_BIT: turn off wifi and smartconfig
+ * WIFI_ON_BIT: turn on wifi
+ */
+static void wifi_control_task(void *parm)
+{
+    wifi_control_eventGroup = xEventGroupCreate();
+    for (;;)
+    {
+        EventBits_t uxBits = xEventGroupWaitBits(
+            wifi_control_eventGroup,
+            WIFI_OFF_BIT | WIFI_ON_BIT,
+            pdTRUE,
+            pdFALSE,
+            portMAX_DELAY);
+
+        if (uxBits & WIFI_OFF_BIT)
+        {
+            press_to_change_AP = true;
+            esp_wifi_disconnect();
+            esp_smartconfig_stop();
+            esp_wifi_stop();
+        }
+        else
+        {
+            if (uxBits & WIFI_ON_BIT)
+            {
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
+                press_to_change_AP = false;
+            }
+        }
+    }
+}
+
+static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT)
+    {
+        switch (event_id)
+        {
+        case WIFI_EVENT_STA_START:
+        {
+            ui_wifi_setting_label_state_change(WIFI_START, "Start connecting");
+            ESP_ERROR_CHECK(esp_smartconfig_start(&smart_cfg));
+            break;
+        }
+        case WIFI_EVENT_STA_STOP:
+        {
+            ui_wifi_setting_label_state_change(WIFI_NOT_CONNECTED, "Not connected");
+            break;
+        }
+        case WIFI_EVENT_STA_DISCONNECTED:
+        {
+            // wifi_state_display(false);
+            if (is_connected == true)
+            {
+                is_connected = false;
+                ui_update_device_icon_state(wifi_icon, false);
+                char *ssid_str = (char *)malloc(128 * sizeof(char));
+                sprintf(ssid_str, "Reconnecting to: %s", wifi_config.sta.ssid);
+                ui_wifi_setting_label_state_change(WIFI_RECONNECT, ssid_str);
+                free(ssid_str);
+            }
+            if (press_to_change_AP == false)
+            {
+                if ((change_AP == true) && ((wifi_config.sta.ssid != old_ssid) || (wifi_config.sta.password != old_password) || (wifi_config.sta.bssid != old_bssid)))
+                {
+                    if (attemp_count < WIFI_connect_max_attemp_number)
+                    {
+                        esp_wifi_connect();
+                        attemp_count += 1;
+                        ESP_LOGE(__func__, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
+                    }
+                    else
+                    {
+                        memcpy(wifi_config.sta.ssid, old_ssid, sizeof(old_ssid));
+                        memcpy(wifi_config.sta.password, old_password, sizeof(old_password));
+                        ESP_LOGI(TAG, "Reconfigurating the previous AP: SSID: %s PASSWORDS: %s", wifi_config.sta.ssid, wifi_config.sta.password);
+                        memcpy(wifi_config.sta.bssid, old_bssid, sizeof(old_bssid));
+                        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+                        attemp_count += 1;
+                    }
+                    ESP_LOGI(TAG, "Connect to the new AP unsuccessfully");
+                }
+                else
+                {
+                    if (change_AP == true)
+                    {
+                        ESP_LOGI(TAG, "The new AP is same to the previous AP");
+                        esp_wifi_disconnect();
+                        change_AP = false;
+                        memcpy(wifi_config.sta.ssid, old_ssid, sizeof(old_ssid));
+                        memcpy(wifi_config.sta.password, old_password, sizeof(old_password));
+                        memcpy(wifi_config.sta.bssid, old_bssid, sizeof(old_bssid));
+                        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+                    }
+                }
+                if ((change_AP == false) || (attemp_count > WIFI_connect_max_attemp_number))
+                {
+                    if (change_AP == true)
+                    {
+                        ESP_LOGI(TAG, "Trying to reconnect to the previous AP");
+                        change_AP = false;
+                    }
+
+                    if (attemp_count_1 < WIFI_connect_max_attemp_number)
+                    {
+                        esp_wifi_connect();
+                        attemp_count_1 += 1;
+                        ESP_LOGE(TAG, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
+                    }
+                    else
+                    {
+                        ESP_LOGI(TAG, "Connect to the AP unsuccessfully. Smart Config again");
+                        if (esp_smartconfig_stop() == ESP_OK)
+                        {
+                            esp_smartconfig_start(&smart_cfg);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    else
+    {
+        if (event_base == IP_EVENT)
+        {
+            if (event_id == IP_EVENT_STA_GOT_IP)
+            {
+                // wifi_state_display(true);
+                ESP_LOGI(TAG, "The Device got an IP successfully");
+                attemp_count = 0;
+                attemp_count_1 = 0;
+                is_connected = true;
+                memcpy(old_ssid, wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid));
+                memcpy(old_password, wifi_config.sta.password, sizeof(wifi_config.sta.password));
+                memcpy(old_bssid, wifi_config.sta.bssid, sizeof(wifi_config.sta.bssid));
+                start_file_server(base_path); // start file server
+                wifi_ap_record_t ap_info;
+                esp_wifi_sta_get_ap_info(&ap_info);
+                if (lv_obj_is_valid(ui_continueLabel) == true)
+                {
+                    start_continue_Animation(ui_continueLabel, 0);
+                }
+                char *ssid_str = (char *)malloc(128 * sizeof(char));
+                sprintf(ssid_str, "Connected to: %s", wifi_config.sta.ssid);
+                ui_wifi_setting_label_state_change(WIFI_GOT_IP, ssid_str);
+                free(ssid_str);
+                ESP_LOGI(TAG, "AP MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X", ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2], ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5]);
+                ui_update_device_icon_state(wifi_icon, true);
+
+                //_ui_flag_modify(ui_error_notify, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
+            }
+        }
+        else
+        {
+            if (event_base == SC_EVENT)
+            {
+                switch (event_id)
+                {
+                case SC_EVENT_SCAN_DONE:
+                {
+                    ui_wifi_setting_label_state_change(WIFI_SCAN_DONE, "Finding Access Point...");
+                    ESP_LOGI(SC_TAG, "Scan done");
+                    break;
+                }
+                case SC_EVENT_FOUND_CHANNEL:
+                {
+                    attemp_count = 0;
+                    attemp_count_1 = 0;
+                    change_AP = true;
+                    ui_wifi_setting_label_state_change(WIFI_FOUND_CHANNEL, "Found Access Point");
+                    ESP_LOGI(SC_TAG, "Found channel");
+                    break;
+                }
+                case SC_EVENT_GOT_SSID_PSWD:
+                {
+                    ESP_LOGI(SC_TAG, "Got SSID and password");
+
+                    smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+
+                    uint8_t ssid[33] = {0};
+                    uint8_t password[65] = {0};
+                    uint8_t bssid[6] = {0};
+                    uint8_t rvd_data[33] = {0};
+
+                    bzero(&wifi_config, sizeof(wifi_config_t));
+                    memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+                    memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+                    wifi_config.sta.bssid_set = evt->bssid_set;
+                    if (wifi_config.sta.bssid_set == true)
+                    {
+                        memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+                        memcpy(bssid, evt->bssid, sizeof(evt->bssid));
+                        ESP_LOGI(SC_TAG, "AP MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+                    }
+
+                    memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+                    memcpy(password, evt->password, sizeof(evt->password));
+
+                    ESP_LOGI(SC_TAG, "SSID:%s", ssid);
+                    ESP_LOGI(SC_TAG, "PASSWORD:%s", password);
+                    char *ssid_str = (char *)malloc(128 * sizeof(char));
+                    sprintf(ssid_str, "Connecting to: %s", ssid);
+                    ui_wifi_setting_label_state_change(WIFI_GOT_SSID_PWD, ssid_str);
+                    free(ssid_str);
+                    if (evt->type == SC_TYPE_ESPTOUCH_V2)
+                    {
+                        ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
+                        ESP_LOGI(SC_TAG, "RVD_DATA:");
+                        for (int i = 0; i < 33; i++)
+                        {
+                            printf("%02x ", rvd_data[i]);
+                        }
+                        printf("\n");
+                    }
+
+                    ESP_ERROR_CHECK(esp_wifi_disconnect());
+                    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+                    esp_wifi_connect();
+                    break;
+                }
+                case SC_EVENT_SEND_ACK_DONE:
+                {
+                    esp_smartconfig_stop();
+                    change_AP = false;
+
+                    break;
+                }
+                default:
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/**
+ *
+ * @brief This function initialize wifi and create, start WiFi handle such as loop (low priority)
+ *
+ */
+static void WIFI_init(void)
+{
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_init(&cfg));
+
+    esp_event_handler_instance_t instance_any_id_Wifi;
+    esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_t instance_any_id_SmartConfig;
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, &instance_any_id_Wifi));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &Wifi_event_handler, &instance_got_ip));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, &instance_any_id_SmartConfig));
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
+}
+
+// /**
+//  * @brief SNTP Get time task : init sntp, then get time from ntp and save time to DS3231,
+//  *        finally delete itself (no loop task)
+//  *
+//  * @param parameter
+//  */
+// static void sntp_syncTime_task(void *parameter)
+// {
+//     do
+//     {
+//         esp_err_t errorReturn = sntp_syncTime();
+//         ESP_ERROR_CHECK_WITHOUT_ABORT(errorReturn);
+//         if (errorReturn == ESP_OK)
+//         {
+//             sntp_setTimmeZoneToVN();
+//             ds3231_getTimeString(&ds3231_device);
+//             struct tm timeInfo = {0};
+//             time_t timeNow = 0;
+//             time(&timeNow);
+//             localtime_r(&timeNow, &timeInfo);
+//             ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_setTime(&ds3231_device, &timeInfo));
+//             sntp_printServerInformation();
+//         }
+//         sntp_deinit();
+//         vTaskDelete(NULL);
+//     } while (0);
+// }
+
+/*------------------------------------ BUTTON ------------------------------------ */
+
+static IRAM_ATTR void button_Handle(void *parameters)
+{
+    button_disable((button_config_st *)parameters);
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    // xTaskNotifyFromISR(getDataFromSensorTask_handle, ULONG_MAX, eNoAction, &high_task_wakeup);
+    BaseType_t result = xEventGroupSetBitsFromISR(button_event, BUTTON_PRESSED_BIT, &xHigherPriorityTaskWoken);
+    if (result != pdFAIL)
+    {
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/*------------------------------------ GET DATA FROM SENSOR ------------------------------------ */
+
+void readSenorChamberTemperature_task(void *parameters)
+{
+    int i = 0;
+    char str[20] = {0};
+    for (;;)
+    {
+        sprintf(str, "%d", i);
+        _ui_label_set_property(ui_tempValue, _UI_LABEL_PROPERTY_TEXT, str);
+        i++;
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+}
+
+void getDataFromSensor_task(void *parameters)
+{
+    struct dataSensor_st dataSensorTemp = {0};
+    TickType_t task_lastWakeTime;
+    TickType_t finishTime;
+
+    getDataSensor_semaphore = xSemaphoreCreateMutex();
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_init_desc(&pcf8575_device, CONFIG_PCF8575_I2C_ADDRESS, CONFIG_PCF8575_I2C_PORT, CONFIG_PCF8575_PIN_NUM_SDA, CONFIG_PCF8575_PIN_NUM_SCL, (-1), NULL));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_init_desc(&sht30_sensor, 0x44, 1, 21, 22));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_init(&sht30_sensor));
+    // Start periodic measurements with 1 measurement per second.
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_start_measurement(&sht30_sensor, SHT3X_PERIODIC_1MPS, SHT3X_HIGH));
+    // Wait until first measurement is ready (constant time of at least 30 ms
+    // or the duration returned from *sht3x_get_measurement_duration*).
+    vTaskDelay(sht3x_get_measurement_duration(SHT3X_HIGH));
+    // End setup for ADS1115
+    memset(ads111x_devices, 0, sizeof(ads111x_devices));
+    for (size_t i = 0; i < CONFIG_ADS111X_DEVICE_COUNT; i++)
+    {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_init_desc(&ads111x_devices[i], addresses[i], CONFIG_ADS111X_I2C_PORT, CONFIG_ADS111X_I2C_MASTER_SDA, CONFIG_ADS111X_I2C_MASTER_SCL));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_mode(&ads111x_devices[i], ADS111X_MODE_CONTINUOUS));    // Continuous conversion mode
+        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
+        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
+    }
+    // Setup for PCF8575
+
+    vTaskDelay(10000 / portTICK_PERIOD_MS);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
+    // End setup for PCF8575
+
+    // Setup button
+    button_event = xEventGroupCreate();
+    button_config_st button_config = {
+        .io_config = {
+            .intr_type = GPIO_INTR_POSEDGE,
+            .mode = GPIO_MODE_INPUT,
+            .pin_bit_mask = BIT64(CONFIG_BUTTON_GPIO_PIN_1),
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE},
+        .gpio_num = CONFIG_BUTTON_GPIO_PIN_1};
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(button_init(&button_config, button_Handle, (void *)(&button_config)));
+    // End setup for button
+
+    for (;;)
+    {
+        // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
+        EventBits_t bits = xEventGroupWaitBits(button_event, BUTTON_PRESSED_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+        if (bits & BUTTON_PRESSED_BIT)
+        {
+            ESP_LOGI(__func__, "Button pressed.");
+            printf("Button pressed.\n");
+        }
+
+        ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
+        finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
+
+        do
+        {
+            task_lastWakeTime = xTaskGetTickCount();
+            dataSensorTemp.timeStamp = 0;
+            if (xSemaphoreTake(getDataSensor_semaphore, portMAX_DELAY))
+            {
+                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_getEpochTime(&ds3231_device, &(dataSensorTemp.timeStamp)));
+
+                ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity));
+                ESP_LOGI(__func__, "Temperature: %f, Humidity: %f", dataSensorTemp.temperature, dataSensorTemp.humidity);
+
+#if 1
+                /**
+                 * @brief Solution 1: Reading data form 4 ADC channels of ADS1115(0) and then, reading 4 chanel ADC of ADS1115(1).
+                 *
+                 */
+                for (size_t i = 0; i < 4; i++)
+                {
+                    for (size_t n = 0; n < 2; n++)
+                    {
+                        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[n], (ads111x_mux_t)(i + 4)));
+                        vTaskDelay(50 / portTICK_PERIOD_MS);
+                        int16_t ADC_rawData = 0;
+                        if (ads111x_get_value(&ads111x_devices[n], &ADC_rawData) == ESP_OK)
+                        {
+                            float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
+                            ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
+                            dataSensorTemp.ADC_Value[n * 4 + i] = ADC_rawData;
+                        }
+                        else
+                        {
+                            ESP_LOGE(__func__, "[%u] Cannot read ADC value.", n);
+                        }
+                    }
+                }
+#else
+                /**
+                 * @brief Solution 2: Interleaved reading of chanels of 2 ads1115 modules.
+                 *
+                 */
+                for (size_t i = 0; i < 8; i++)
+                {
+                    int16_t ADC_rawData = 0;
+                    if (ads111x_get_value(&ads111x_devices[i % 2], &ADC_rawData) == ESP_OK)
+                    {
+                        dataSensorTemp.ADC_Value[i] = ADC_rawData;
+                        float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
+                        ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
+                    }
+                    else
+                    {
+                        ESP_LOGE(__func__, "[%u] Cannot read ADC value.", i);
+                    }
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[i % 2], (ads111x_mux_t)((i + 1) / 2)));
+                }
+
+                ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[0], (ads111x_mux_t)(0)));
+                ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[1], (ads111x_mux_t)(0)));
+
+#endif
+
+                xSemaphoreGive(getDataSensor_semaphore); // Give mutex
+                ESP_LOGI(__func__, "Read data from sensors completed!");
+
+                if (xQueueSendToBack(dataSensorSentToSD_queue, (void *)&dataSensorTemp, WAIT_10_TICK * 10) != pdPASS)
+                {
+                    ESP_LOGE(__func__, "Failed to post the data sensor to dataSensorMidleware Queue.");
+                }
+                else
+                {
+                    ESP_LOGI(__func__, "Success to post the data sensor to dataSensorMidleware Queue.");
+                }
+            };
+            memset(&dataSensorTemp, 0, sizeof(struct dataSensor_st));
+            vTaskDelayUntil(&task_lastWakeTime, PERIOD_GET_DATA_FROM_SENSOR);
+
+        } while (task_lastWakeTime < finishTime);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
+        xEventGroupClearBits(button_event, BUTTON_PRESSED_BIT);
+        button_enable(&button_config);
+    }
+};
+
+/*------------------------------------ SAVE DATA ------------------------------------ */
+
+/**
+ * @brief This task is responsible for naming SD file
+ *
+ * @param parameters
+ */
+void fileEvent_task(void *parameters)
+{
+    fileStore_eventGroup = xEventGroupCreate();
+    SemaphoreHandle_t file_semaphore = xSemaphoreCreateMutex();
+
+    for (;;)
+    {
+        EventBits_t bits = xEventGroupWaitBits(fileStore_eventGroup,
+                                               FILE_RENAME_NEWFILE,
+                                               pdTRUE,
+                                               pdFALSE,
+                                               portMAX_DELAY);
+
+        if (xSemaphoreTake(file_semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            struct tm timeInfo = {0};
+            time_t timeNow = 0;
+            time(&timeNow);
+            localtime_r(&timeNow, &timeInfo);
+
+            if (bits & FILE_RENAME_NEWFILE)
+            {
+                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_initialize(&ds3231_device, CONFIG_RTC_I2C_PORT, CONFIG_RTC_PIN_NUM_SDA, CONFIG_RTC_PIN_NUM_SCL));
+                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
+            }
+            xSemaphoreGive(file_semaphore);
+        }
+    }
+};
+
+/**
+ * @brief Save data from SD queue to SD card
+ *
+ * @param parameters
+ */
+void saveDataSensorToSDcard_task(void *parameters)
+{
+    UBaseType_t message_stored = 0;
+    struct dataSensor_st dataSensorReceiveFromQueue;
+
+    for (;;)
+    {
+        message_stored = uxQueueMessagesWaiting(dataSensorSentToSD_queue);
+
+        if (message_stored != 0) // Check if dataSensorSentToSD_queue not empty
+        {
+            if (xQueueReceive(dataSensorSentToSD_queue, (void *)&dataSensorReceiveFromQueue, WAIT_10_TICK * 50) == pdPASS) // Get data sesor from queue
+            {
+                ESP_LOGI(__func__, "Receiving data from queue successfully.");
+
+                if (xSemaphoreTake(SDcard_semaphore, portMAX_DELAY) == pdTRUE)
+                {
+                    static esp_err_t errorCode_t;
+                    // Create data string follow format
+
+                    errorCode_t = sdcard_writeDataToFile(nameFileSaveData, dataSensor_templateSaveToSDCard,
+                                                         dataSensorReceiveFromQueue.timeStamp,
+                                                         dataSensorReceiveFromQueue.temperature,
+                                                         dataSensorReceiveFromQueue.humidity,
+                                                         dataSensorReceiveFromQueue.ADC_Value[0],
+                                                         dataSensorReceiveFromQueue.ADC_Value[1],
+                                                         dataSensorReceiveFromQueue.ADC_Value[2],
+                                                         dataSensorReceiveFromQueue.ADC_Value[3],
+                                                         dataSensorReceiveFromQueue.ADC_Value[4],
+                                                         dataSensorReceiveFromQueue.ADC_Value[5],
+                                                         dataSensorReceiveFromQueue.ADC_Value[6],
+                                                         dataSensorReceiveFromQueue.ADC_Value[7]);
+                    ESP_LOGI(TAG, "Save task received mutex!");
+                    xSemaphoreGive(SDcard_semaphore);
+                    if (errorCode_t != ESP_OK)
+                    {
+                        ESP_LOGE(__func__, "sdcard_writeDataToFile(...) function returned error: 0x%.4X", errorCode_t);
+                    }
+                }
+            }
+            else
+            {
+                ESP_LOGI(__func__, "Receiving data from queue failed.");
+                continue;
+            }
+        }
+
+        vTaskDelay(PERIOD_SAVE_DATA_SENSOR_TO_SDCARD);
+    }
+};
+
+/*****************************************************************************************************/
+/*-------------------------------  MAIN_APP DEFINE FUNCTIONS  ---------------------------------------*/
+/*****************************************************************************************************/
+
+static void initialize_nvs(void)
+{
+    esp_err_t error = nvs_flash_init();
+    if (error == ESP_ERR_NVS_NO_FREE_PAGES || error == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_flash_erase());
+        error = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(error);
+}
+
+void app_main(void)
+{
+    // esp_log_level_set("*", ESP_LOG_NONE);
+    // Allow other core to finish initialization
+    vTaskDelay(pdMS_TO_TICKS(200));
+    ESP_LOGI(__func__, "Starting app main.");
+
+    /* Print chip information */
+    esp_chip_info_t chip_info;
+    uint32_t flash_size;
+    esp_chip_info(&chip_info);
+    printf("This is %s chip with %d CPU core(s), %s%s%s%s, ",
+           CONFIG_IDF_TARGET,
+           chip_info.cores,
+           (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi/" : "",
+           (chip_info.features & CHIP_FEATURE_BT) ? "BT" : "",
+           (chip_info.features & CHIP_FEATURE_BLE) ? "BLE" : "",
+           (chip_info.features & CHIP_FEATURE_IEEE802154) ? ", 802.15.4 (Zigbee/Thread)" : "");
+
+    unsigned major_rev = chip_info.revision / 100;
+    unsigned minor_rev = chip_info.revision % 100;
+    printf("silicon revision v%d.%d, ", major_rev, minor_rev);
+    if (esp_flash_get_size(NULL, &flash_size) == ESP_OK)
+    {
+        printf("%" PRIu32 "MB %s flash\n", flash_size / (uint32_t)(1024 * 1024),
+               (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+    }
+    printf("Minimum free heap size: %" PRIu32 " bytes\n", esp_get_minimum_free_heap_size());
+
+    ESP_LOGI(__func__, "Name device: %s.", CONFIG_NAME_DEVICE);
+
+    // Initialize nvs partition
+    ESP_LOGI(__func__, "Initialize nvs partition.");
+    initialize_nvs();
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_init());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_loop_create_default());
+    // Wait a second for memory initialization
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+
+#if (CONFIG_USING_SDCARD)
+    // Initialize SPI Bus
+    ESP_LOGI(__func__, "Initialize SD card with SPI interface.");
+    esp_vfs_fat_mount_config_t mount_config_t = MOUNT_CONFIG_DEFAULT();
+    spi_bus_config_t spi_bus_config_t = SPI_BUS_CONFIG_DEFAULT();
+    sdmmc_host_t host_t = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = CONFIG_PIN_NUM_CS;
+    slot_config.host_id = host_t.slot;
+
+    sdmmc_card_t SDCARD;
+    esp_err_t sd_err = sdcard_initialize(&mount_config_t, &SDCARD, &host_t, &spi_bus_config_t, &slot_config);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(sd_err);
+    SDcard_semaphore = xSemaphoreCreateMutex();
+
+    xTaskCreate(fileEvent_task, "EventFile", (1024 * 8), NULL, (UBaseType_t)20, NULL);
+
+#endif // CONFIG_USING_SDCARD
+
+#if CONFIG_USING_LCD_TFT
+    ili9341_init();
+    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 5, NULL);
+    ui_init();
+
+    if (sd_err == ESP_OK)
+    {
+        ui_update_device_icon_state(sdcard_icon, true);
+    }
+#endif // CONFIG_USING_LCD_TFT
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(i2cdev_init());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_initialize(&ds3231_device, CONFIG_RTC_I2C_PORT, CONFIG_RTC_PIN_NUM_SDA, CONFIG_RTC_PIN_NUM_SCL));
+
+    // Create dataSensorQueue
+    dataSensorSentToSD_queue = xQueueCreate(QUEUE_SIZE, sizeof(struct dataSensor_st));
+    while (dataSensorSentToSD_queue == NULL)
+    {
+        ESP_LOGE(__func__, "Create dataSensorSentToSD Queue failed.");
+        ESP_LOGI(__func__, "Retry to create dataSensorSentToSD Queue...");
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        dataSensorSentToSD_queue = xQueueCreate(QUEUE_SIZE, sizeof(struct dataSensor_st));
+    };
+    ESP_LOGI(__func__, "Create dataSensorSentToSD Queue success.");
+
+    // Create task to get data from sensor (32Kb stack memory| priority 25(max))
+    // Period 5000ms
+    xTaskCreate(getDataFromSensor_task, "GetDataSensor", (1024 * 32), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
+
+    // Create task to save data from sensor read by getDataFromSensor_task() to SD card (16Kb stack memory| priority 10)
+    // Period 5000ms
+    xTaskCreate(saveDataSensorToSDcard_task, "SaveDataSensor", (1024 * 16), NULL, (UBaseType_t)15, &saveDataSensorToSDcardTask_handle);
+
+    xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
+
+    // Create task to control wifi by GUI (8Kb stack memory| priority 10)
+    xTaskCreate(&wifi_control_task, "wifi control task", 10 * 1024, NULL, 10, NULL);
+
+#if CONFIG_USING_WIFI
+    WIFI_init();
+#endif
+}
