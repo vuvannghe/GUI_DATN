@@ -40,6 +40,7 @@
 #include "driver/uart.h"
 #include "driver/i2c.h"
 #include "driver/spi_common.h"
+#include "driver/gptimer.h"
 #include "esp_spiffs.h"
 
 #include "freertos/FreeRTOS.h"
@@ -60,7 +61,6 @@
 #include "sht3x.h"
 #include "pcf8574.h"
 #include "pcf8575.h"
-#include "button.h"
 #include "FileServer.h"
 #include "esp_lcd_ili9341.h"
 #include "extended_ili9341.h"
@@ -74,6 +74,7 @@ __attribute__((unused)) static const char *TAG = "Main";
 #define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(1000 / portTICK_PERIOD_MS)
 #define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
 #define SAMPLING_TIMME (TickType_t)(200000 / portTICK_PERIOD_MS)
+#define CLEAN_CHAMBER_TIME 10 // seconds
 
 #define NO_WAIT (TickType_t)(0)
 #define WAIT_10_TICK (TickType_t)(10 / portTICK_PERIOD_MS)
@@ -82,12 +83,7 @@ __attribute__((unused)) static const char *TAG = "Main";
 #define QUEUE_SIZE 10U
 #define DATA_SENSOR_MIDLEWARE_QUEUE_SIZE 20
 
-#define WIFI_AVAIABLE_BIT BIT0
-#define WIFI_DISCONNECT_BIT BIT1
-
-#define FILE_RENAME_NEWFILE BIT2
-
-#define BUTTON_PRESSED_BIT BIT1
+#define FILE_RENAME_NEWFILE BIT4
 
 TaskHandle_t getDataFromSensorTask_handle = NULL;
 TaskHandle_t saveDataSensorToSDcardTask_handle = NULL;
@@ -98,11 +94,9 @@ TaskHandle_t smartConfigTask_handle = NULL;
 SemaphoreHandle_t getDataSensor_semaphore = NULL;
 SemaphoreHandle_t SDcard_semaphore = NULL;
 SemaphoreHandle_t writeDataToSDcardNoWifi_semaphore = NULL;
+SemaphoreHandle_t stop_clean_chamber_semaphore = NULL; // Semaphore for stop clean chamber stage in measurement process
 
 QueueHandle_t dataSensorSentToSD_queue = NULL;
-// QueueHandle_t moduleError_queue = NULL;
-QueueHandle_t nameFileSaveDataNoWiFi_queue = NULL;
-QueueHandle_t dataSensorMidleware_queue = NULL;
 
 // Event group
 static EventGroupHandle_t fileStore_eventGroup;
@@ -114,11 +108,12 @@ EventGroupHandle_t measure_control_eventGroup;
 static char nameFileSaveData[21] = {0};
 static const char base_path[] = MOUNT_POINT;
 
+gptimer_handle_t clean_chamber_Timer = NULL; // Timer for cleaning sensor chamber stage
+
 /*------------------------------------ Define devices ------------------------------------ */
 static i2c_dev_t ds3231_device = {0};
 static i2c_dev_t ads111x_devices[CONFIG_ADS111X_DEVICE_COUNT] = {0};
 static sht3x_t sht30_sensor = {0};
-// static i2c_dev_t pcf8574_device = {0};
 static i2c_dev_t pcf8575_device = {0};
 
 // I2C addresses for ADS1115
@@ -437,21 +432,16 @@ static void WIFI_init(void)
 //     } while (0);
 // }
 
-/*------------------------------------ BUTTON ------------------------------------ */
-
-static IRAM_ATTR void button_Handle(void *parameters)
-{
-    button_disable((button_config_st *)parameters);
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    // xTaskNotifyFromISR(getDataFromSensorTask_handle, ULONG_MAX, eNoAction, &high_task_wakeup);
-    BaseType_t result = xEventGroupSetBitsFromISR(button_event, BUTTON_PRESSED_BIT, &xHigherPriorityTaskWoken);
-    if (result != pdFAIL)
-    {
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-    }
-}
-
 /*------------------------------------ GET DATA FROM SENSOR ------------------------------------ */
+
+void IRAM_ATTR clean_chamber_Timer_ISR_handler(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data)
+{
+    BaseType_t xHigherPriorityTaskWoken;
+    xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(stop_clean_chamber_semaphore, xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    gptimer_stop(clean_chamber_Timer);
+}
 
 void readSenorChamberTemperature_task(void *parameters)
 {
@@ -473,6 +463,29 @@ void getDataFromSensor_task(void *parameters)
     TickType_t finishTime;
 
     getDataSensor_semaphore = xSemaphoreCreateMutex();
+    stop_clean_chamber_semaphore = xSemaphoreCreateBinary(); // create semaphore for stop cleaning sensor chamber stage in measurement process
+    // Initialize timer for sensor chamber cleaning stage timer
+    gptimer_config_t clean_chamber_Timer_cfg = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000, // 1MHz, 1 tick= 1/resolution = 1us
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&clean_chamber_Timer_cfg, &clean_chamber_Timer));
+
+    // Resgister callback for sensor chamber cleaning stage timer
+    gptimer_event_callbacks_t clean_chamber_cbs = {
+        .on_alarm = clean_chamber_Timer_ISR_handler,
+    };
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(clean_chamber_Timer, &clean_chamber_cbs, NULL));
+    ESP_LOGI(TAG, "Enable clean chamber timer");
+    ESP_ERROR_CHECK(gptimer_enable(clean_chamber_Timer));
+    // Set alarm config for sensor chamber cleaning timer
+    gptimer_alarm_config_t clean_chamber_alarm_config = {
+        .reload_count = 0,                                                         // reload count value (the start value when starting timer)
+        .alarm_count = CLEAN_CHAMBER_TIME * clean_chamber_Timer_cfg.resolution_hz, // alarm count value (the end value of timer before the alarm occurs)
+        .flags.auto_reload_on_alarm = true,                                        // auto reload timer to reload count value when alarm occur
+    };
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(clean_chamber_Timer, &clean_chamber_alarm_config));
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_init_desc(&pcf8575_device, CONFIG_PCF8575_I2C_ADDRESS, CONFIG_PCF8575_I2C_PORT, CONFIG_PCF8575_PIN_NUM_SDA, CONFIG_PCF8575_PIN_NUM_SCL, (-1), NULL));
     ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
@@ -499,36 +512,29 @@ void getDataFromSensor_task(void *parameters)
     ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
     // End setup for PCF8575
 
-    // Setup button
-    button_event = xEventGroupCreate();
-    button_config_st button_config = {
-        .io_config = {
-            .intr_type = GPIO_INTR_POSEDGE,
-            .mode = GPIO_MODE_INPUT,
-            .pin_bit_mask = BIT64(CONFIG_BUTTON_GPIO_PIN_1),
-            .pull_up_en = GPIO_PULLUP_ENABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE},
-        .gpio_num = CONFIG_BUTTON_GPIO_PIN_1};
-
-    ESP_ERROR_CHECK_WITHOUT_ABORT(button_init(&button_config, button_Handle, (void *)(&button_config)));
-    // End setup for button
-
     for (;;)
     {
         // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
-        EventBits_t bits = xEventGroupWaitBits(button_event, BUTTON_PRESSED_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
-        if (bits & BUTTON_PRESSED_BIT)
+        EventBits_t bits = xEventGroupWaitBits(button_event, MEASURE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+        if (bits & MEASURE_BIT)
         {
-            ESP_LOGI(__func__, "Button pressed.");
-            printf("Button pressed.\n");
+            ESP_LOGI(__func__, "Measurement process start.");
         }
 
         ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
         vTaskDelay(5000 / portTICK_PERIOD_MS);
         ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
         ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
-        finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
 
+        // Start cleaning sensor chamber
+        ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
+        ESP_LOGI(__func__, "Start cleaning sensor chamber.");
+        if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
+        }
+
+        finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
         do
         {
             task_lastWakeTime = xTaskGetTickCount();
@@ -606,9 +612,9 @@ void getDataFromSensor_task(void *parameters)
             vTaskDelayUntil(&task_lastWakeTime, PERIOD_GET_DATA_FROM_SENSOR);
 
         } while (task_lastWakeTime < finishTime);
+
         ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
-        xEventGroupClearBits(button_event, BUTTON_PRESSED_BIT);
-        button_enable(&button_config);
+        ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
     }
 };
 

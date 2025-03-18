@@ -180,7 +180,7 @@ void ui_event_measureBTN(lv_event_t *e)
         _ui_opacity_set(ui_measureBTN, 130);
         _ui_flag_modify(ui_loadingSpinner, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
         _ui_flag_modify(ui_measureState, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
-        // xEventGroupSetBits(measure_control_eventGroup, MEASURE_BIT);
+        xEventGroupSetBits(measure_control_eventGroup, MEASURE_BIT);
     }
 }
 
