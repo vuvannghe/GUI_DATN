@@ -76,7 +76,7 @@ static void process_coordinates(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t
     *y = map(*y, 22, 300, 0, 320);
 }
 
-void ili9341_init(lv_disp_t **mainscreen)
+void ili9341_init()
 {
     static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
     static lv_disp_drv_t disp_drv;      // contains callback functions

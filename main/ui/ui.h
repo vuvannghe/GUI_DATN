@@ -17,6 +17,7 @@ extern "C"
 #define WIFI_GOT_SSID_PWD 0x04
 #define WIFI_GOT_IP 0x05
 #define WIFI_NOT_CONNECTED 0x06
+#define WIFI_RECONNECT 0x07
 
     void appear_Animation(lv_obj_t *TargetObject, int delay);
 
@@ -87,6 +88,7 @@ extern "C"
     extern lv_obj_t *ui_settingscreen;
     void ui_event_settingscreenMenu(lv_event_t *e);
     void ui_event_wifi_setting_onoff(lv_event_t *e);
+    void ui_event_heating_setting_onoff(lv_event_t *e);
     void ui_wifi_setting_label_state_change(uint8_t state, char *str);
     extern lv_obj_t *ui_settingscreenMenu;
     extern lv_obj_t *ui_settingtitleLabel;
@@ -94,6 +96,10 @@ extern "C"
     extern lv_obj_t *ui_wifi_setting_onoff;
     extern lv_obj_t *ui_setting_wifi_state_panel;
     extern lv_obj_t *ui_setting_wifi_state_label;
+    extern lv_obj_t *ui_heating_setting_label;
+    extern lv_obj_t *ui_heating_setting_onoff;
+    extern lv_obj_t *ui_setting_heating_state_panel;
+    extern lv_obj_t *ui_setting_heating_state_label;
     // CUSTOM VARIABLES
 
     // EVENTS

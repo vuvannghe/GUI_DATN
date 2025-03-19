@@ -47,6 +47,6 @@
 /**
  * @brief Initialize the ILI9341 LCD display.
  */
-void ili9341_init(lv_disp_t **mainscreen);
+void ili9341_init();
 
 #endif // __EXTENDED_ILI9341_H__

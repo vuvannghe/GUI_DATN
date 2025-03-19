@@ -54,6 +54,7 @@ static const char *TAG = "Main";
 
 // Event group
 EventGroupHandle_t wifi_control_eventGroup;
+EventGroupHandle_t measure_control_eventGroup;
 
 // Semaphore
 SemaphoreHandle_t xWifiControlSemaphore = NULL;
@@ -158,7 +159,7 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
         {
         case WIFI_EVENT_STA_START:
         {
-            ui_wifi_setting_label_state_change(WIFI_START, "Start Connecting");
+            ui_wifi_setting_label_state_change(WIFI_START, "Start connecting");
             ESP_ERROR_CHECK(esp_smartconfig_start(&smart_cfg));
             break;
         }
@@ -174,7 +175,10 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
             {
                 is_connected = false;
                 ui_update_device_icon_state(wifi_icon, false);
-                ui_wifi_setting_label_state_change(WIFI_NOT_CONNECTED, "Not connected");
+                char *ssid_str = (char *)malloc(128 * sizeof(char));
+                sprintf(ssid_str, "Reconnecting to: %s", wifi_config.sta.ssid);
+                ui_wifi_setting_label_state_change(WIFI_RECONNECT, ssid_str);
+                free(ssid_str);
             }
             if (press_to_change_AP == false)
             {
@@ -361,9 +365,13 @@ static void WIFI_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, NULL));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &Wifi_event_handler, NULL));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, NULL));
+    esp_event_handler_instance_t instance_any_id_Wifi;
+    esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_t instance_any_id_SmartConfig;
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, &instance_any_id_Wifi));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &Wifi_event_handler, &instance_got_ip));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, &instance_any_id_SmartConfig));
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
@@ -413,19 +421,18 @@ esp_err_t scan_bmp_images(const char *base_path)
     closedir(dir);
     return ESP_OK;
 }
-/*-------------------------------------LVGL--------------------------------------- */
-
-/**
- * @brief Task to display .bmp images stored in SD card.
- *
- * This task waits for the xImageShowSemaphore to be given, and then it displays the
- * next or previous image in the image list based on the forward and backward
- * flags. If the forward flag is true, it shows the next image, and if the backward
- * flag is true, it shows the previous image. The image is displayed in the
- * lv_scr_act() screen.
- *
- * @param parm Not used in this function.
- */
+void readSenorChamberTemperature_task(void *parameters)
+{
+    int i = 0;
+    char str[20] = {0};
+    for (;;)
+    {
+        sprintf(str, "%d", i);
+        _ui_label_set_property(ui_tempValue, _UI_LABEL_PROPERTY_TEXT, str);
+        i++;
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+}
 
 // nvs flash init
 static void initialize_nvs(void)
@@ -461,7 +468,7 @@ void app_main(void)
 
     // Initialize LCD TFT (LVGL drivers)
 #if CONFIG_USING_LCD_TFT
-    ili9341_init(&lcd_mainscreen);
+    ili9341_init();
     xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 5, NULL);
     ui_init();
 #endif // CONFIG_USING_LCD_TFT
@@ -475,5 +482,6 @@ void app_main(void)
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(sd_err);
     xTaskCreate(&wifi_control_task, "wifi control task", 10 * 1024, NULL, 10, NULL);
+    xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
     WIFI_init(); // Initialize Wifi in station mode with Smart Config
 }
