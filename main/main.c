@@ -59,8 +59,6 @@
 #include "sntp_sync.h"
 #include "ADS111x.h"
 #include "sht3x.h"
-#include "pcf8574.h"
-#include "pcf8575.h"
 #include "FileServer.h"
 #include "esp_lcd_ili9341.h"
 #include "extended_ili9341.h"
@@ -114,7 +112,7 @@ gptimer_handle_t clean_chamber_Timer = NULL; // Timer for cleaning sensor chambe
 static i2c_dev_t ds3231_device = {0};
 static i2c_dev_t ads111x_devices[CONFIG_ADS111X_DEVICE_COUNT] = {0};
 static sht3x_t sht30_sensor = {0};
-static i2c_dev_t pcf8575_device = {0};
+i2c_dev_t pcf8575_device = {0};
 
 // I2C addresses for ADS1115
 const uint8_t addresses[CONFIG_ADS111X_DEVICE_COUNT] = {
@@ -506,12 +504,6 @@ void getDataFromSensor_task(void *parameters)
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
     }
-    // Setup for PCF8575
-
-    vTaskDelay(10000 / portTICK_PERIOD_MS);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
-    // End setup for PCF8575
-
     for (;;)
     {
         // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
@@ -612,8 +604,6 @@ void getDataFromSensor_task(void *parameters)
             vTaskDelayUntil(&task_lastWakeTime, PERIOD_GET_DATA_FROM_SENSOR);
 
         } while (task_lastWakeTime < finishTime);
-
-        ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0));
         ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
     }
 };
@@ -728,7 +718,6 @@ static void initialize_nvs(void)
 
 void app_main(void)
 {
-    // esp_log_level_set("*", ESP_LOG_NONE);
     // Allow other core to finish initialization
     vTaskDelay(pdMS_TO_TICKS(200));
     ESP_LOGI(__func__, "Starting app main.");
@@ -819,7 +808,7 @@ void app_main(void)
 
     xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
 
-    // Create task to control wifi by GUI (8Kb stack memory| priority 10)
+    // Create task to control wifi by GUI (10Kb stack memory| priority 10)
     xTaskCreate(&wifi_control_task, "wifi control task", 10 * 1024, NULL, 10, NULL);
 
 #if CONFIG_USING_WIFI

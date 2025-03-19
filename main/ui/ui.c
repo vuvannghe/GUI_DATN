@@ -330,6 +330,7 @@ void ui_event_heating_setting_onoff(lv_event_t *e)
             _ui_obj_set_style_text_color(ui_setting_heating_state_label, 0x000000);
             _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
             _ui_opacity_set(ui_measureBTN, 255);
+            pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1);
         }
         else
         {
@@ -337,6 +338,7 @@ void ui_event_heating_setting_onoff(lv_event_t *e)
             _ui_obj_set_style_text_color(ui_setting_heating_state_label, 0xd92626);
             _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
             _ui_opacity_set(ui_measureBTN, 130);
+            pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0);
         }
     }
 }
