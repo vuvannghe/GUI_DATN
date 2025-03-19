@@ -72,6 +72,7 @@ void ui_settingscreen_screen_init(void);
 lv_obj_t *ui_settingscreen;
 void ui_event_settingscreenMenu(lv_event_t *e);
 void ui_event_wifi_setting_onoff(lv_event_t *e);
+void ui_event_heating_setting_onoff(lv_event_t *e);
 void ui_wifi_setting_label_state_change(uint8_t state, char *str);
 lv_obj_t *ui_settingscreenMenu;
 lv_obj_t *ui_settingtitleLabel;
@@ -79,6 +80,10 @@ lv_obj_t *ui_wifi_setting_label;
 lv_obj_t *ui_wifi_setting_onoff;
 lv_obj_t *ui_setting_wifi_state_panel;
 lv_obj_t *ui_setting_wifi_state_label;
+lv_obj_t *ui_heating_setting_label;
+lv_obj_t *ui_heating_setting_onoff;
+lv_obj_t *ui_setting_heating_state_panel;
+lv_obj_t *ui_setting_heating_state_label;
 
 // EVENTS
 lv_obj_t *ui____initial_actions0;
@@ -180,8 +185,19 @@ void ui_event_measureBTN(lv_event_t *e)
         _ui_opacity_set(ui_measureBTN, 130);
         _ui_flag_modify(ui_loadingSpinner, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
         _ui_flag_modify(ui_measureState, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
-        xEventGroupSetBits(measure_control_eventGroup, MEASURE_BIT);
+        _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
+        lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 130, LV_PART_INDICATOR | LV_STATE_CHECKED);
     }
+}
+
+void ui_reset_before_measure_state(lv_event_t *e)
+{
+    _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
+    _ui_opacity_set(ui_measureBTN, 255);
+    _ui_flag_modify(ui_loadingSpinner, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_ADD);
+    _ui_flag_modify(ui_measureState, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_ADD);
+    _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
+    lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 255, LV_PART_INDICATOR | LV_STATE_CHECKED);
 }
 
 void ui_event_mainscreenMenu(lv_event_t *e)
@@ -282,14 +298,12 @@ void ui_wifi_setting_label_state_change(uint8_t state, char *str)
     {
         _ui_label_set_property(ui_setting_wifi_state_label, _UI_LABEL_PROPERTY_TEXT, str);
         _ui_obj_set_style_text_color(ui_setting_wifi_state_label, 0x000000);
-        //_ui_flag_modify(ui_setting_wifi_state_label, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
         break;
     }
     case WIFI_GOT_IP:
     {
         _ui_label_set_property(ui_setting_wifi_state_label, _UI_LABEL_PROPERTY_TEXT, str);
         _ui_obj_set_style_text_color(ui_setting_wifi_state_label, 0x000000);
-        //_ui_flag_modify(ui_setting_wifi_state_label, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
         break;
     }
     case WIFI_NOT_CONNECTED:
@@ -301,6 +315,29 @@ void ui_wifi_setting_label_state_change(uint8_t state, char *str)
 
     default:
         break;
+    }
+}
+
+void ui_event_heating_setting_onoff(lv_event_t *e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if (event_code == LV_EVENT_VALUE_CHANGED)
+    {
+        if (lv_obj_has_state(ui_heating_setting_onoff, LV_STATE_CHECKED))
+        {
+            _ui_label_set_property(ui_setting_heating_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned on");
+            _ui_obj_set_style_text_color(ui_setting_heating_state_label, 0x000000);
+            _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
+            _ui_opacity_set(ui_measureBTN, 255);
+        }
+        else
+        {
+            _ui_label_set_property(ui_setting_heating_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned off");
+            _ui_obj_set_style_text_color(ui_setting_heating_state_label, 0xd92626);
+            _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
+            _ui_opacity_set(ui_measureBTN, 130);
+        }
     }
 }
 
