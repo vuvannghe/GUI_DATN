@@ -187,10 +187,11 @@ void ui_event_measureBTN(lv_event_t *e)
         _ui_flag_modify(ui_measureState, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
         _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
         lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 130, LV_PART_INDICATOR | LV_STATE_CHECKED);
+        xEventGroupSetBits(measure_control_eventGroup, MEASURE_BIT);
     }
 }
 
-void ui_reset_before_measure_state(lv_event_t *e)
+void ui_reset_before_measure_state()
 {
     _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
     _ui_opacity_set(ui_measureBTN, 255);
@@ -198,6 +199,21 @@ void ui_reset_before_measure_state(lv_event_t *e)
     _ui_flag_modify(ui_measureState, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_ADD);
     _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
     lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 255, LV_PART_INDICATOR | LV_STATE_CHECKED);
+}
+
+void ui_begin_sampling_stage()
+{
+    _ui_label_set_property(ui_measureState, _UI_LABEL_PROPERTY_TEXT, "Sampling");
+}
+
+void ui_update_temperature_humidity(float temperature, float humidity)
+{
+    char str1[10] = {0};
+    char str2[10] = {0};
+    sprintf(str1, "%.1f", temperature);
+    sprintf(str2, "%.1f", humidity);
+    _ui_label_set_property(ui_tempValue, _UI_LABEL_PROPERTY_TEXT, str1);
+    _ui_label_set_property(ui_humiValue, _UI_LABEL_PROPERTY_TEXT, str2);
 }
 
 void ui_event_mainscreenMenu(lv_event_t *e)

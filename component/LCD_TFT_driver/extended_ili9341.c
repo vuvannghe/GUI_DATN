@@ -28,7 +28,7 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 
     if (touchpad_pressed && touchpad_cnt > 0)
     {
-        // printf("Touch: %d %d\n", data->point.x, data->point.y);
+        //   printf("Touch: %d %d\n", data->point.x, data->point.y);
         data->point.x = touchpad_x[0];
         data->point.y = touchpad_y[0];
         data->state = LV_INDEV_STATE_PRESSED;

@@ -71,7 +71,7 @@ __attribute__((unused)) static const char *TAG = "Main";
 
 #define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(1000 / portTICK_PERIOD_MS)
 #define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
-#define SAMPLING_TIMME (TickType_t)(200000 / portTICK_PERIOD_MS)
+#define SAMPLING_TIMME (TickType_t)(20000 / portTICK_PERIOD_MS)
 #define CLEAN_CHAMBER_TIME 10 // seconds
 
 #define NO_WAIT (TickType_t)(0)
@@ -92,19 +92,19 @@ TaskHandle_t smartConfigTask_handle = NULL;
 SemaphoreHandle_t getDataSensor_semaphore = NULL;
 SemaphoreHandle_t SDcard_semaphore = NULL;
 SemaphoreHandle_t writeDataToSDcardNoWifi_semaphore = NULL;
-SemaphoreHandle_t stop_clean_chamber_semaphore = NULL; // Semaphore for stop clean chamber stage in measurement process
+SemaphoreHandle_t stop_clean_chamber_semaphore = NULL;           // Semaphore for stop clean chamber stage in measurement process
+SemaphoreHandle_t monitor_temperature_humidity_semaphore = NULL; // Semaphore for monitor temperature and humidity task
 
 QueueHandle_t dataSensorSentToSD_queue = NULL;
 
 // Event group
 static EventGroupHandle_t fileStore_eventGroup;
-static EventGroupHandle_t button_event;
-EventGroupHandle_t wifi_control_eventGroup;
 EventGroupHandle_t wifi_control_eventGroup;
 EventGroupHandle_t measure_control_eventGroup;
 
 static char nameFileSaveData[21] = {0};
 static const char base_path[] = MOUNT_POINT;
+httpd_handle_t file_server = NULL; // handle for file server
 
 gptimer_handle_t clean_chamber_Timer = NULL; // Timer for cleaning sensor chamber stage
 
@@ -185,6 +185,7 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
         case WIFI_EVENT_STA_STOP:
         {
             ui_wifi_setting_label_state_change(WIFI_NOT_CONNECTED, "Not connected");
+            stop_file_server(file_server);
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED:
@@ -277,7 +278,7 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
                 memcpy(old_ssid, wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid));
                 memcpy(old_password, wifi_config.sta.password, sizeof(wifi_config.sta.password));
                 memcpy(old_bssid, wifi_config.sta.bssid, sizeof(wifi_config.sta.bssid));
-                start_file_server(base_path); // start file server
+                start_file_server(&file_server, base_path); // start file server
                 wifi_ap_record_t ap_info;
                 esp_wifi_sta_get_ap_info(&ap_info);
                 if (lv_obj_is_valid(ui_continueLabel) == true)
@@ -290,8 +291,6 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
                 free(ssid_str);
                 ESP_LOGI(TAG, "AP MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X", ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2], ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5]);
                 ui_update_device_icon_state(wifi_icon, true);
-
-                //_ui_flag_modify(ui_error_notify, LV_OBJ_FLAG_HIDDEN, _UI_MODIFY_FLAG_REMOVE);
             }
         }
         else
@@ -443,14 +442,17 @@ void IRAM_ATTR clean_chamber_Timer_ISR_handler(gptimer_handle_t timer, const gpt
 
 void readSenorChamberTemperature_task(void *parameters)
 {
-    int i = 0;
-    char str[20] = {0};
+    struct dataSensor_st dataSensorTemp = {0};
+
     for (;;)
     {
-        sprintf(str, "%d", i);
-        _ui_label_set_property(ui_tempValue, _UI_LABEL_PROPERTY_TEXT, str);
-        i++;
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        if (xSemaphoreTake(monitor_temperature_humidity_semaphore, portMAX_DELAY) != pdTRUE)
+        {
+            sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity);
+            ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
+            xSemaphoreGive(monitor_temperature_humidity_semaphore);
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+        }
     }
 }
 
@@ -459,8 +461,10 @@ void getDataFromSensor_task(void *parameters)
     struct dataSensor_st dataSensorTemp = {0};
     TickType_t task_lastWakeTime;
     TickType_t finishTime;
+    measure_control_eventGroup = xEventGroupCreate(); // create event group for control measurement process
 
     getDataSensor_semaphore = xSemaphoreCreateMutex();
+    monitor_temperature_humidity_semaphore = xSemaphoreCreateMutex();
     stop_clean_chamber_semaphore = xSemaphoreCreateBinary(); // create semaphore for stop cleaning sensor chamber stage in measurement process
     // Initialize timer for sensor chamber cleaning stage timer
     gptimer_config_t clean_chamber_Timer_cfg = {
@@ -504,107 +508,113 @@ void getDataFromSensor_task(void *parameters)
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
     }
+
     for (;;)
     {
         // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
-        EventBits_t bits = xEventGroupWaitBits(button_event, MEASURE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+        EventBits_t bits = xEventGroupWaitBits(measure_control_eventGroup, MEASURE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
         if (bits & MEASURE_BIT)
         {
             ESP_LOGI(__func__, "Measurement process start.");
         }
-
-        ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
-        ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
-
-        // Start cleaning sensor chamber
-        ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
-        ESP_LOGI(__func__, "Start cleaning sensor chamber.");
-        if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
+        if (xSemaphoreTake(monitor_temperature_humidity_semaphore, portMAX_DELAY) == pdTRUE)
         {
-            ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
-        }
 
-        finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
-        do
-        {
-            task_lastWakeTime = xTaskGetTickCount();
-            dataSensorTemp.timeStamp = 0;
-            if (xSemaphoreTake(getDataSensor_semaphore, portMAX_DELAY))
+            ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
+
+            // Start cleaning sensor chamber
+            ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
+            ESP_LOGI(__func__, "Start cleaning sensor chamber.");
+            if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
             {
-                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_getEpochTime(&ds3231_device, &(dataSensorTemp.timeStamp)));
+                ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
+                ui_begin_sampling_stage();
+            }
 
-                ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity));
-                ESP_LOGI(__func__, "Temperature: %f, Humidity: %f", dataSensorTemp.temperature, dataSensorTemp.humidity);
+            finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
+            do
+            {
+                task_lastWakeTime = xTaskGetTickCount();
+                dataSensorTemp.timeStamp = 0;
+                if (xSemaphoreTake(getDataSensor_semaphore, portMAX_DELAY))
+                {
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_getEpochTime(&ds3231_device, &(dataSensorTemp.timeStamp)));
+
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity));
+                    ESP_LOGI(__func__, "Temperature: %f, Humidity: %f", dataSensorTemp.temperature, dataSensorTemp.humidity);
+                    ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
 
 #if 1
-                /**
-                 * @brief Solution 1: Reading data form 4 ADC channels of ADS1115(0) and then, reading 4 chanel ADC of ADS1115(1).
-                 *
-                 */
-                for (size_t i = 0; i < 4; i++)
-                {
-                    for (size_t n = 0; n < 2; n++)
+                    /**
+                     * @brief Solution 1: Reading data form 4 ADC channels of ADS1115(0) and then, reading 4 chanel ADC of ADS1115(1).
+                     *
+                     */
+                    for (size_t i = 0; i < 4; i++)
                     {
-                        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[n], (ads111x_mux_t)(i + 4)));
-                        vTaskDelay(50 / portTICK_PERIOD_MS);
-                        int16_t ADC_rawData = 0;
-                        if (ads111x_get_value(&ads111x_devices[n], &ADC_rawData) == ESP_OK)
+                        for (size_t n = 0; n < 2; n++)
                         {
+                            ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[n], (ads111x_mux_t)(i + 4)));
+                            vTaskDelay(50 / portTICK_PERIOD_MS);
+                            int16_t ADC_rawData = 0;
+                            if (ads111x_get_value(&ads111x_devices[n], &ADC_rawData) == ESP_OK)
+                            {
+                                float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
+                                ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
+                                dataSensorTemp.ADC_Value[n * 4 + i] = ADC_rawData;
+                            }
+                            else
+                            {
+                                ESP_LOGE(__func__, "[%u] Cannot read ADC value.", n);
+                            }
+                        }
+                    }
+#else
+                    /**
+                     * @brief Solution 2: Interleaved reading of chanels of 2 ads1115 modules.
+                     *
+                     */
+                    for (size_t i = 0; i < 8; i++)
+                    {
+                        int16_t ADC_rawData = 0;
+                        if (ads111x_get_value(&ads111x_devices[i % 2], &ADC_rawData) == ESP_OK)
+                        {
+                            dataSensorTemp.ADC_Value[i] = ADC_rawData;
                             float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
                             ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
-                            dataSensorTemp.ADC_Value[n * 4 + i] = ADC_rawData;
                         }
                         else
                         {
-                            ESP_LOGE(__func__, "[%u] Cannot read ADC value.", n);
+                            ESP_LOGE(__func__, "[%u] Cannot read ADC value.", i);
                         }
+                        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[i % 2], (ads111x_mux_t)((i + 1) / 2)));
                     }
-                }
-#else
-                /**
-                 * @brief Solution 2: Interleaved reading of chanels of 2 ads1115 modules.
-                 *
-                 */
-                for (size_t i = 0; i < 8; i++)
-                {
-                    int16_t ADC_rawData = 0;
-                    if (ads111x_get_value(&ads111x_devices[i % 2], &ADC_rawData) == ESP_OK)
-                    {
-                        dataSensorTemp.ADC_Value[i] = ADC_rawData;
-                        float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
-                        ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
-                    }
-                    else
-                    {
-                        ESP_LOGE(__func__, "[%u] Cannot read ADC value.", i);
-                    }
-                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[i % 2], (ads111x_mux_t)((i + 1) / 2)));
-                }
 
-                ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[0], (ads111x_mux_t)(0)));
-                ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[1], (ads111x_mux_t)(0)));
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[0], (ads111x_mux_t)(0)));
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[1], (ads111x_mux_t)(0)));
 
 #endif
 
-                xSemaphoreGive(getDataSensor_semaphore); // Give mutex
-                ESP_LOGI(__func__, "Read data from sensors completed!");
+                    xSemaphoreGive(getDataSensor_semaphore); // Give mutex
+                    ESP_LOGI(__func__, "Read data from sensors completed!");
 
-                if (xQueueSendToBack(dataSensorSentToSD_queue, (void *)&dataSensorTemp, WAIT_10_TICK * 10) != pdPASS)
-                {
-                    ESP_LOGE(__func__, "Failed to post the data sensor to dataSensorMidleware Queue.");
-                }
-                else
-                {
-                    ESP_LOGI(__func__, "Success to post the data sensor to dataSensorMidleware Queue.");
-                }
-            };
-            memset(&dataSensorTemp, 0, sizeof(struct dataSensor_st));
-            vTaskDelayUntil(&task_lastWakeTime, PERIOD_GET_DATA_FROM_SENSOR);
+                    if (xQueueSendToBack(dataSensorSentToSD_queue, (void *)&dataSensorTemp, WAIT_10_TICK * 10) != pdPASS)
+                    {
+                        ESP_LOGE(__func__, "Failed to post the data sensor to dataSensorMidleware Queue.");
+                    }
+                    else
+                    {
+                        ESP_LOGI(__func__, "Success to post the data sensor to dataSensorMidleware Queue.");
+                    }
+                };
+                memset(&dataSensorTemp, 0, sizeof(struct dataSensor_st));
+                vTaskDelayUntil(&task_lastWakeTime, PERIOD_GET_DATA_FROM_SENSOR);
 
-        } while (task_lastWakeTime < finishTime);
-        ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
+            } while (task_lastWakeTime < finishTime);
+            ui_reset_before_measure_state();
+            ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
+            xSemaphoreGive(monitor_temperature_humidity_semaphore);
+        }
     }
 };
 

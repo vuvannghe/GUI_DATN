@@ -37,6 +37,8 @@ extern "C"
     void ui_mainscreen_screen_init(void);
     void ui_event_mainscreen(lv_event_t *e);
     void ui_update_device_icon_state(lv_obj_t *TargetObject, bool state);
+    void ui_begin_sampling_stage();
+    void ui_update_temperature_humidity(float temperature, float humidity);
     extern lv_obj_t *ui_mainscreen;
     extern lv_obj_t *wifi_icon;
     extern lv_obj_t *sdcard_icon;
@@ -52,6 +54,7 @@ extern "C"
     extern lv_obj_t *ui_humiValue;
     extern lv_obj_t *ui_timelabel;
     void ui_event_measureBTN(lv_event_t *e);
+    void ui_reset_before_measure_state();
     extern lv_obj_t *ui_measureBTN;
     extern lv_obj_t *ui_measureLabel;
     extern lv_obj_t *ui_resultContainer;

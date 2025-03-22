@@ -1,7 +1,7 @@
 /**
  * @file sdcard.h
  * @author Nguyen Nhu Hai Long ( @long27032002 )
- * @brief 
+ * @brief
  * @version 0.1
  * @date 2022-11-29
  * @copyright Copyright (c) 2022
@@ -26,12 +26,13 @@
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN + 17)
 
 /* Scratch buffer size */
-#define SCRATCH_BUFSIZE  8192
+#define SCRATCH_BUFSIZE 8192
 
 #define IS_FILE_EXT(filename, ext) \
     (strcasecmp(&filename[strlen(filename) - sizeof(ext) + 1], ext) == 0)
 
-struct file_server_data {
+struct file_server_data
+{
     /* Base path of file storage */
     char base_path[ESP_VFS_PATH_MAX + 1];
 
@@ -47,12 +48,14 @@ esp_err_t http_response_dir_html(httpd_req_t *req, const char *dirpath);
 
 esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filename);
 
-const char* get_path_from_uri(char *dest, const char *base_path, const char *uri, size_t destsize);
+const char *get_path_from_uri(char *dest, const char *base_path, const char *uri, size_t destsize);
 
 esp_err_t download_get_handler(httpd_req_t *req);
 
 esp_err_t delete_post_handler(httpd_req_t *req);
 
-esp_err_t start_file_server(const char *base_path);
+esp_err_t start_file_server(httpd_handle_t *server, const char *base_path);
+
+esp_err_t stop_file_server(httpd_handle_t server);
 
 #endif
