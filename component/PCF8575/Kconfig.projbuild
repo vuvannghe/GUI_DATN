@@ -13,7 +13,7 @@ menu "PCF8575 configuration"
             GPIO number for I2C Master data line.
 
     config PCF8575_PIN_NUM_INTERRUPT
-        int "SDA GPIO Number"
+        int "ITR GPIO Number"
         default 34 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
         help
             GPIO number for I2C Master data line.

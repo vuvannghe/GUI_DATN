@@ -1,12 +1,12 @@
 /**
  * @file DeviceManager.h
- * @author Nguyen Nhu Hai Long 
- * @brief Manager all device 
+ * @author Nguyen Nhu Hai Long
+ * @brief Manager all device
  * @version 0.1
  * @date 2022-11-02
- * 
+ *
  * @copyright Copyright (c) 2022
- * 
+ *
  */
 
 #ifndef __DEVICEMANAGER_H__
@@ -19,7 +19,8 @@
 #include "string.h"
 #include "time.h"
 
-typedef enum {
+typedef enum
+{
     DISCONNECTED = 0,
     CONNECTED,
     CONNECTING,
@@ -34,12 +35,15 @@ struct statusDevice_st
     status_t mqttClient;
 };
 
-struct moduleError_st
+typedef struct
 {
-    uint64_t timestamp;
     esp_err_t sdError;
     esp_err_t ds3231Error;
-};
-
+    esp_err_t sht85Error;
+    esp_err_t ads1115_1Error;
+    esp_err_t ads1115_2Error;
+    esp_err_t ads1115_3Error;
+    bool isads1115Error;
+} moduleError_st;
 
 #endif

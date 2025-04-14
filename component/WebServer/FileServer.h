@@ -26,7 +26,7 @@
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN + 17)
 
 /* Scratch buffer size */
-#define SCRATCH_BUFSIZE 8192
+#define SCRATCH_BUFSIZE 1024
 
 #define IS_FILE_EXT(filename, ext) \
     (strcasecmp(&filename[strlen(filename) - sizeof(ext) + 1], ext) == 0)

@@ -80,7 +80,7 @@ esp_err_t http_response_dir_html(httpd_req_t *req, const char *dirpath)
             continue;
         }
         sprintf(entrysize, "%ld", entry_stat.st_size);
-        ESP_LOGI(__func__, "Found %s : %s (%s bytes)", entrytype, entry->d_name, entrysize);
+        // ESP_LOGI(__func__, "Found %s : %s (%s bytes)", entrytype, entry->d_name, entrysize);
 
         /* Send chunk of HTML file containing table entries with file name and size */
         httpd_resp_sendstr_chunk(req, "<tr><td><a href=\"");
@@ -311,9 +311,9 @@ esp_err_t delete_post_handler(httpd_req_t *req)
 }
 
 /* Function to start the file server */
+static struct file_server_data *server_data = NULL;
 esp_err_t start_file_server(httpd_handle_t *server, const char *base_path)
 {
-    static struct file_server_data *server_data = NULL;
 
     if (server_data)
     {
@@ -372,6 +372,8 @@ esp_err_t stop_file_server(httpd_handle_t server)
     {
         if (httpd_stop(server) == ESP_OK)
         {
+            free(server_data);
+            server_data = NULL;
             ESP_LOGI(__func__, "File server stopped successfully");
             return ESP_OK;
         }

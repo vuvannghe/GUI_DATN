@@ -96,9 +96,7 @@ SemaphoreHandle_t stop_clean_chamber_semaphore = NULL;           // Semaphore fo
 SemaphoreHandle_t monitor_temperature_humidity_semaphore = NULL; // Semaphore for monitor temperature and humidity task
 
 QueueHandle_t dataSensorSentToSD_queue = NULL;
-
 // Event group
-static EventGroupHandle_t fileStore_eventGroup;
 EventGroupHandle_t wifi_control_eventGroup;
 EventGroupHandle_t measure_control_eventGroup;
 
@@ -113,11 +111,15 @@ static i2c_dev_t ds3231_device = {0};
 static i2c_dev_t ads111x_devices[CONFIG_ADS111X_DEVICE_COUNT] = {0};
 static sht3x_t sht30_sensor = {0};
 i2c_dev_t pcf8575_device = {0};
+moduleError_st moduleError;
 
 // I2C addresses for ADS1115
 const uint8_t addresses[CONFIG_ADS111X_DEVICE_COUNT] = {
     ADS111X_ADDR_SDA,
     ADS111X_ADDR_GND};
+
+// Define relay trigger pin
+#define RELAY_TRIGGER_PIN GPIO_NUM_25
 
 /*------------------------------------ WIFI ------------------------------------ */
 // Define Wi-Fi
@@ -154,14 +156,19 @@ static void wifi_control_task(void *parm)
         if (uxBits & WIFI_OFF_BIT)
         {
             press_to_change_AP = true;
-            esp_wifi_disconnect();
+            // esp_wifi_disconnect();
             esp_smartconfig_stop();
             esp_wifi_stop();
+            esp_wifi_deinit();
         }
         else
         {
             if (uxBits & WIFI_ON_BIT)
             {
+                wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+                esp_wifi_init(&cfg);
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
                 press_to_change_AP = false;
             }
@@ -185,12 +192,12 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
         case WIFI_EVENT_STA_STOP:
         {
             ui_wifi_setting_label_state_change(WIFI_NOT_CONNECTED, "Not connected");
+
             stop_file_server(file_server);
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED:
         {
-            // wifi_state_display(false);
             if (is_connected == true)
             {
                 is_connected = false;
@@ -281,10 +288,6 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
                 start_file_server(&file_server, base_path); // start file server
                 wifi_ap_record_t ap_info;
                 esp_wifi_sta_get_ap_info(&ap_info);
-                if (lv_obj_is_valid(ui_continueLabel) == true)
-                {
-                    start_continue_Animation(ui_continueLabel, 0);
-                }
                 char *ssid_str = (char *)malloc(128 * sizeof(char));
                 sprintf(ssid_str, "Connected to: %s", wifi_config.sta.ssid);
                 ui_wifi_setting_label_state_change(WIFI_GOT_IP, ssid_str);
@@ -386,9 +389,6 @@ static void WIFI_init(void)
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     assert(sta_netif);
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_init(&cfg));
-
     esp_event_handler_instance_t instance_any_id_Wifi;
     esp_event_handler_instance_t instance_got_ip;
     esp_event_handler_instance_t instance_any_id_SmartConfig;
@@ -397,37 +397,10 @@ static void WIFI_init(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &Wifi_event_handler, &instance_got_ip));
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &Wifi_event_handler, &instance_any_id_SmartConfig));
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
 }
-
-// /**
-//  * @brief SNTP Get time task : init sntp, then get time from ntp and save time to DS3231,
-//  *        finally delete itself (no loop task)
-//  *
-//  * @param parameter
-//  */
-// static void sntp_syncTime_task(void *parameter)
-// {
-//     do
-//     {
-//         esp_err_t errorReturn = sntp_syncTime();
-//         ESP_ERROR_CHECK_WITHOUT_ABORT(errorReturn);
-//         if (errorReturn == ESP_OK)
-//         {
-//             sntp_setTimmeZoneToVN();
-//             ds3231_getTimeString(&ds3231_device);
-//             struct tm timeInfo = {0};
-//             time_t timeNow = 0;
-//             time(&timeNow);
-//             localtime_r(&timeNow, &timeInfo);
-//             ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_setTime(&ds3231_device, &timeInfo));
-//             sntp_printServerInformation();
-//         }
-//         sntp_deinit();
-//         vTaskDelete(NULL);
-//     } while (0);
-// }
 
 /*------------------------------------ GET DATA FROM SENSOR ------------------------------------ */
 
@@ -446,11 +419,12 @@ void readSenorChamberTemperature_task(void *parameters)
 
     for (;;)
     {
-        if (xSemaphoreTake(monitor_temperature_humidity_semaphore, portMAX_DELAY) != pdTRUE)
+        if (xSemaphoreTake(monitor_temperature_humidity_semaphore, portMAX_DELAY) == pdTRUE)
         {
             sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity);
             ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
             xSemaphoreGive(monitor_temperature_humidity_semaphore);
+            ESP_LOGI("HEAP", "Free heap size: %" PRIu32 " bytes", esp_get_free_heap_size());
             vTaskDelay(2000 / portTICK_PERIOD_MS);
         }
     }
@@ -491,24 +465,45 @@ void getDataFromSensor_task(void *parameters)
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_init_desc(&pcf8575_device, CONFIG_PCF8575_I2C_ADDRESS, CONFIG_PCF8575_I2C_PORT, CONFIG_PCF8575_PIN_NUM_SDA, CONFIG_PCF8575_PIN_NUM_SCL, (-1), NULL));
     ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 1));
-
+    // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_13, 1));
+    gpio_set_level(RELAY_TRIGGER_PIN, 0);
     ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_init_desc(&sht30_sensor, 0x44, 1, 21, 22));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_init(&sht30_sensor));
+    moduleError.sht85Error = ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_init(&sht30_sensor));
+    vTaskDelay(sht3x_get_measurement_duration(SHT3X_HIGH));
     // Start periodic measurements with 1 measurement per second.
     ESP_ERROR_CHECK_WITHOUT_ABORT(sht3x_start_measurement(&sht30_sensor, SHT3X_PERIODIC_1MPS, SHT3X_HIGH));
     // Wait until first measurement is ready (constant time of at least 30 ms
     // or the duration returned from *sht3x_get_measurement_duration*).
     vTaskDelay(sht3x_get_measurement_duration(SHT3X_HIGH));
-    // End setup for ADS1115
+    if (moduleError.sht85Error == ESP_OK)
+    {
+        ui_update_device_icon_state(temp_sensor_icon, true);
+    }
+    // Setup for ADS1115
+    moduleError.isads1115Error = true;
     memset(ads111x_devices, 0, sizeof(ads111x_devices));
     for (size_t i = 0; i < CONFIG_ADS111X_DEVICE_COUNT; i++)
     {
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_init_desc(&ads111x_devices[i], addresses[i], CONFIG_ADS111X_I2C_PORT, CONFIG_ADS111X_I2C_MASTER_SDA, CONFIG_ADS111X_I2C_MASTER_SCL));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_mode(&ads111x_devices[i], ADS111X_MODE_CONTINUOUS));    // Continuous conversion mode
-        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
-        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
+        moduleError.ads1115_1Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_mode(&ads111x_devices[i], ADS111X_MODE_CONTINUOUS));    // Continuous conversion mode
+        moduleError.ads1115_2Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
+        moduleError.ads1115_3Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
+        if (moduleError.ads1115_1Error != ESP_OK || moduleError.ads1115_2Error != ESP_OK || moduleError.ads1115_3Error != ESP_OK)
+        {
+            if (moduleError.isads1115Error == true)
+            {
+                moduleError.isads1115Error = false;
+            }
+        }
     }
-
+    if (moduleError.isads1115Error == true)
+    {
+        ui_update_device_icon_state(adc_icon, true);
+    }
+    if (lv_obj_is_valid(ui_continueLabel) == true)
+    {
+        start_continue_Animation(ui_continueLabel, 4000); // Ready to switch to main screen
+    }
     for (;;)
     {
         // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
@@ -522,10 +517,12 @@ void getDataFromSensor_task(void *parameters)
 
             ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
             ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
-
-            // Start cleaning sensor chamber
+            //  Start cleaning sensor chamber
+            gpio_set_level(RELAY_TRIGGER_PIN, 1); // Turn on relay to turn on fan
             ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
+            // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_13, 1)); // Turn on fan
             ESP_LOGI(__func__, "Start cleaning sensor chamber.");
+
             if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
             {
                 ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
@@ -545,7 +542,6 @@ void getDataFromSensor_task(void *parameters)
                     ESP_LOGI(__func__, "Temperature: %f, Humidity: %f", dataSensorTemp.temperature, dataSensorTemp.humidity);
                     ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
 
-#if 1
                     /**
                      * @brief Solution 1: Reading data form 4 ADC channels of ADS1115(0) and then, reading 4 chanel ADC of ADS1115(1).
                      *
@@ -559,7 +555,7 @@ void getDataFromSensor_task(void *parameters)
                             int16_t ADC_rawData = 0;
                             if (ads111x_get_value(&ads111x_devices[n], &ADC_rawData) == ESP_OK)
                             {
-                                float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
+                                float voltage = (ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE) * ADC_rawData;
                                 ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
                                 dataSensorTemp.ADC_Value[n * 4 + i] = ADC_rawData;
                             }
@@ -569,32 +565,6 @@ void getDataFromSensor_task(void *parameters)
                             }
                         }
                     }
-#else
-                    /**
-                     * @brief Solution 2: Interleaved reading of chanels of 2 ads1115 modules.
-                     *
-                     */
-                    for (size_t i = 0; i < 8; i++)
-                    {
-                        int16_t ADC_rawData = 0;
-                        if (ads111x_get_value(&ads111x_devices[i % 2], &ADC_rawData) == ESP_OK)
-                        {
-                            dataSensorTemp.ADC_Value[i] = ADC_rawData;
-                            float voltage = ads111x_gain_values[ADS111X_GAIN_2V048] / ADS111X_MAX_VALUE * ADC_rawData;
-                            ESP_LOGI(__func__, "Raw ADC value: %d, Voltage: %.04f Volts.", ADC_rawData, voltage);
-                        }
-                        else
-                        {
-                            ESP_LOGE(__func__, "[%u] Cannot read ADC value.", i);
-                        }
-                        ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[i % 2], (ads111x_mux_t)((i + 1) / 2)));
-                    }
-
-                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[0], (ads111x_mux_t)(0)));
-                    ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[1], (ads111x_mux_t)(0)));
-
-#endif
-
                     xSemaphoreGive(getDataSensor_semaphore); // Give mutex
                     ESP_LOGI(__func__, "Read data from sensors completed!");
 
@@ -612,49 +582,16 @@ void getDataFromSensor_task(void *parameters)
 
             } while (task_lastWakeTime < finishTime);
             ui_reset_before_measure_state();
+            ui_show_measurement_result(nameFileSaveData);
+            // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_12, 0)); // Turn off fan
+            gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
             ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
             xSemaphoreGive(monitor_temperature_humidity_semaphore);
         }
     }
-};
+}
 
 /*------------------------------------ SAVE DATA ------------------------------------ */
-
-/**
- * @brief This task is responsible for naming SD file
- *
- * @param parameters
- */
-void fileEvent_task(void *parameters)
-{
-    fileStore_eventGroup = xEventGroupCreate();
-    SemaphoreHandle_t file_semaphore = xSemaphoreCreateMutex();
-
-    for (;;)
-    {
-        EventBits_t bits = xEventGroupWaitBits(fileStore_eventGroup,
-                                               FILE_RENAME_NEWFILE,
-                                               pdTRUE,
-                                               pdFALSE,
-                                               portMAX_DELAY);
-
-        if (xSemaphoreTake(file_semaphore, portMAX_DELAY) == pdTRUE)
-        {
-            struct tm timeInfo = {0};
-            time_t timeNow = 0;
-            time(&timeNow);
-            localtime_r(&timeNow, &timeInfo);
-
-            if (bits & FILE_RENAME_NEWFILE)
-            {
-                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_initialize(&ds3231_device, CONFIG_RTC_I2C_PORT, CONFIG_RTC_PIN_NUM_SDA, CONFIG_RTC_PIN_NUM_SCL));
-                ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
-            }
-            xSemaphoreGive(file_semaphore);
-        }
-    }
-};
-
 /**
  * @brief Save data from SD queue to SD card
  *
@@ -764,6 +701,15 @@ void app_main(void)
     // Wait a second for memory initialization
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
+    // GPIO for control relay 5V (NC - high level trigger)
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << RELAY_TRIGGER_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE};
+    gpio_config(&io_conf);
+
 #if (CONFIG_USING_SDCARD)
     // Initialize SPI Bus
     ESP_LOGI(__func__, "Initialize SD card with SPI interface.");
@@ -775,20 +721,17 @@ void app_main(void)
     slot_config.host_id = host_t.slot;
 
     sdmmc_card_t SDCARD;
-    esp_err_t sd_err = sdcard_initialize(&mount_config_t, &SDCARD, &host_t, &spi_bus_config_t, &slot_config);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(sd_err);
+    moduleError.sdError = sdcard_initialize(&mount_config_t, &SDCARD, &host_t, &spi_bus_config_t, &slot_config);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(moduleError.sdError);
     SDcard_semaphore = xSemaphoreCreateMutex();
-
-    xTaskCreate(fileEvent_task, "EventFile", (1024 * 8), NULL, (UBaseType_t)20, NULL);
-
 #endif // CONFIG_USING_SDCARD
 
 #if CONFIG_USING_LCD_TFT
     ili9341_init();
-    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 5, NULL);
+    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 15, NULL);
     ui_init();
 
-    if (sd_err == ESP_OK)
+    if (moduleError.sdError == ESP_OK)
     {
         ui_update_device_icon_state(sdcard_icon, true);
     }
@@ -810,16 +753,16 @@ void app_main(void)
 
     // Create task to get data from sensor (32Kb stack memory| priority 25(max))
     // Period 5000ms
-    xTaskCreate(getDataFromSensor_task, "GetDataSensor", (1024 * 32), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
+    xTaskCreate(getDataFromSensor_task, "GetDataSensor", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
 
     // Create task to save data from sensor read by getDataFromSensor_task() to SD card (16Kb stack memory| priority 10)
     // Period 5000ms
-    xTaskCreate(saveDataSensorToSDcard_task, "SaveDataSensor", (1024 * 16), NULL, (UBaseType_t)15, &saveDataSensorToSDcardTask_handle);
+    xTaskCreate(saveDataSensorToSDcard_task, "SaveDataSensor", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
 
     xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
 
     // Create task to control wifi by GUI (10Kb stack memory| priority 10)
-    xTaskCreate(&wifi_control_task, "wifi control task", 10 * 1024, NULL, 10, NULL);
+    xTaskCreate(&wifi_control_task, "wifi control task", (10 * 1024), NULL, 10, NULL);
 
 #if CONFIG_USING_WIFI
     WIFI_init();

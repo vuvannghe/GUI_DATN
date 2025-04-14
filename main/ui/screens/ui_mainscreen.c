@@ -139,14 +139,14 @@ void ui_mainscreen_screen_init(void)
     lv_obj_set_style_text_color(ui_humiValue, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_humiValue, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_timelabel = lv_label_create(ui_mainscreen);
-    lv_obj_set_width(ui_timelabel, LV_SIZE_CONTENT);
-    lv_obj_set_height(ui_timelabel, LV_SIZE_CONTENT);
-    lv_obj_set_x(ui_timelabel, 0);
-    lv_obj_set_y(ui_timelabel, 1);
-    lv_obj_set_align(ui_timelabel, LV_ALIGN_TOP_MID);
-    lv_label_set_text(ui_timelabel, "00:00");
-    lv_obj_set_style_text_font(ui_timelabel, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // ui_timelabel = lv_label_create(ui_mainscreen);
+    // lv_obj_set_width(ui_timelabel, LV_SIZE_CONTENT);
+    // lv_obj_set_height(ui_timelabel, LV_SIZE_CONTENT);
+    // lv_obj_set_x(ui_timelabel, 0);
+    // lv_obj_set_y(ui_timelabel, 1);
+    // lv_obj_set_align(ui_timelabel, LV_ALIGN_TOP_MID);
+    // lv_label_set_text(ui_timelabel, "00:00");
+    // lv_obj_set_style_text_font(ui_timelabel, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_measureBTN = lv_btn_create(ui_mainscreen);
     lv_obj_set_width(ui_measureBTN, 170);
@@ -190,10 +190,13 @@ void ui_mainscreen_screen_init(void)
     lv_obj_set_style_border_width(ui_resultContainer, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_resultValue = lv_label_create(ui_resultContainer);
-    lv_obj_set_width(ui_resultValue, LV_SIZE_CONTENT);
+    lv_obj_set_width(ui_resultValue, 200);
     lv_obj_set_height(ui_resultValue, LV_SIZE_CONTENT);
     lv_obj_set_align(ui_resultValue, LV_ALIGN_CENTER);
+    lv_obj_set_style_text_align(ui_resultValue, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_label_set_text(ui_resultValue, "");
+    lv_obj_set_style_text_font(ui_resultValue, &lv_font_montserrat_12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // lv_obj_add_flag(ui_resultValue, LV_OBJ_FLAG_HIDDEN);
 
     ui_error_notify = lv_label_create(ui_mainscreen);
     lv_obj_set_width(ui_error_notify, LV_SIZE_CONTENT);
@@ -213,7 +216,7 @@ void ui_mainscreen_screen_init(void)
     lv_obj_set_x(ui_resultLabel, 5);
     lv_obj_set_y(ui_resultLabel, 60);
     lv_obj_set_align(ui_resultLabel, LV_ALIGN_LEFT_MID);
-    lv_label_set_text(ui_resultLabel, "Result:");
+    lv_label_set_text(ui_resultLabel, "Status:");
     lv_obj_set_style_text_color(ui_resultLabel, lv_color_hex(0x564F4F), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_resultLabel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -267,7 +270,7 @@ void ui_mainscreen_screen_init(void)
     lv_obj_set_x(ui_measureState, 5);
     lv_obj_set_y(ui_measureState, 60);
     lv_obj_set_align(ui_measureState, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_measureState, "Cleaning chamber");
+    lv_label_set_text(ui_measureState, "Start sampling");
     lv_obj_add_flag(ui_measureState, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_color(ui_measureState, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_measureState, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -288,5 +291,5 @@ void ui_mainscreen_screen_init(void)
 
     lv_obj_add_event_cb(ui_measureBTN, ui_event_measureBTN, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_mainscreenMenu, ui_event_mainscreenMenu, LV_EVENT_ALL, NULL);
-    lv_obj_add_event_cb(ui_mainscreen, ui_event_mainscreen, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(ui_mainscreen, ui_event_mainscreen, LV_EVENT_SCREEN_LOADED, NULL);
 }

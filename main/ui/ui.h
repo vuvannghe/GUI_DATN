@@ -52,9 +52,10 @@ extern "C"
     extern lv_obj_t *ui_humiLabel;
     extern lv_obj_t *ui_humiUnit;
     extern lv_obj_t *ui_humiValue;
-    extern lv_obj_t *ui_timelabel;
+    //  extern lv_obj_t *ui_timelabel;
     void ui_event_measureBTN(lv_event_t *e);
     void ui_reset_before_measure_state();
+    void ui_show_measurement_result(const char *result);
     extern lv_obj_t *ui_measureBTN;
     extern lv_obj_t *ui_measureLabel;
     extern lv_obj_t *ui_resultContainer;
