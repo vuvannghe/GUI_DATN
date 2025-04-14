@@ -81,8 +81,6 @@ __attribute__((unused)) static const char *TAG = "Main";
 #define QUEUE_SIZE 10U
 #define DATA_SENSOR_MIDLEWARE_QUEUE_SIZE 20
 
-#define FILE_RENAME_NEWFILE BIT4
-
 TaskHandle_t getDataFromSensorTask_handle = NULL;
 TaskHandle_t saveDataSensorToSDcardTask_handle = NULL;
 TaskHandle_t sntp_syncTimeTask_handle = NULL;
