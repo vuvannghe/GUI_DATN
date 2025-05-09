@@ -21,7 +21,7 @@ lv_obj_t *uic_continueContainer;
 
 // SCREEN: ui_mainscreen
 void ui_mainscreen_screen_init(void);
-void ui_event_mainscreen(lv_event_t *e);
+// void ui_event_mainscreen(lv_event_t *e);
 void ui_show_measurement_result(const char *result);
 void ui_reset_before_measure_state();
 lv_obj_t *ui_mainscreen;
@@ -164,16 +164,23 @@ void ui_event_continueContainer(lv_event_t *e)
     }
 }
 
-void ui_event_mainscreen(lv_event_t *e)
-{
-    lv_event_code_t event_code = lv_event_get_code(e);
+// static void delayed_clean_cb(lv_timer_t *timer)
+// {
+//     lv_obj_clean((lv_obj_t *)timer->user_data);
+//     lv_timer_del(timer); // Xóa timer sau khi xong
+// }
 
-    if (event_code == LV_EVENT_SCREEN_LOADED)
-    {
-        lv_obj_clean(ui_welcomescreen);
-        lv_obj_remove_event_cb(ui_mainscreen, ui_event_mainscreen);
-    }
-}
+// void ui_event_mainscreen(lv_event_t *e)
+// {
+//     lv_event_code_t event_code = lv_event_get_code(e);
+
+//     if (event_code == LV_EVENT_SCREEN_LOADED)
+//     {
+//         // lv_obj_clean(ui_welcomescreen);
+//         lv_timer_create(delayed_clean_cb, 4000, ui_welcomescreen);
+//         lv_obj_remove_event_cb(ui_mainscreen, ui_event_mainscreen);
+//     }
+// }
 
 void ui_event_measureBTN(lv_event_t *e)
 {

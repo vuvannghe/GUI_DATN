@@ -291,5 +291,5 @@ void ui_mainscreen_screen_init(void)
 
     lv_obj_add_event_cb(ui_measureBTN, ui_event_measureBTN, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_mainscreenMenu, ui_event_mainscreenMenu, LV_EVENT_ALL, NULL);
-    lv_obj_add_event_cb(ui_mainscreen, ui_event_mainscreen, LV_EVENT_SCREEN_LOADED, NULL);
+    // lv_obj_add_event_cb(ui_mainscreen, ui_event_mainscreen, LV_EVENT_SCREEN_LOADED, NULL);
 }

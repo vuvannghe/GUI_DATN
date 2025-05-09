@@ -69,10 +69,10 @@
 
 __attribute__((unused)) static const char *TAG = "Main";
 
-#define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(1000 / portTICK_PERIOD_MS)
+#define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(500 / portTICK_PERIOD_MS)
 #define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
-#define SAMPLING_TIMME (TickType_t)(20000 / portTICK_PERIOD_MS)
-#define CLEAN_CHAMBER_TIME 10 // seconds
+#define SAMPLING_TIME (TickType_t)(300000 / portTICK_PERIOD_MS) // mili seconds
+#define CLEAN_CHAMBER_TIME (180)                                // seconds
 
 #define NO_WAIT (TickType_t)(0)
 #define WAIT_10_TICK (TickType_t)(10 / portTICK_PERIOD_MS)
@@ -126,7 +126,6 @@ static const char *SC_TAG = "SMART CONFIG";
 static smartconfig_start_config_t smart_cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
 static uint8_t attemp_count = 0;
 bool change_AP = false;
-bool press_to_change_AP = false;
 bool is_connected = false;
 static uint8_t attemp_count_1 = 0;
 static wifi_config_t wifi_config;
@@ -153,7 +152,6 @@ static void wifi_control_task(void *parm)
 
         if (uxBits & WIFI_OFF_BIT)
         {
-            press_to_change_AP = true;
             // esp_wifi_disconnect();
             esp_smartconfig_stop();
             esp_wifi_stop();
@@ -168,7 +166,6 @@ static void wifi_control_task(void *parm)
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
-                press_to_change_AP = false;
             }
         }
     }
@@ -205,64 +202,57 @@ static void Wifi_event_handler(void *arg, esp_event_base_t event_base,
                 ui_wifi_setting_label_state_change(WIFI_RECONNECT, ssid_str);
                 free(ssid_str);
             }
-            if (press_to_change_AP == false)
+            if ((change_AP == true) && ((wifi_config.sta.ssid != old_ssid) || (wifi_config.sta.password != old_password) || (wifi_config.sta.bssid != old_bssid)))
             {
-                if ((change_AP == true) && ((wifi_config.sta.ssid != old_ssid) || (wifi_config.sta.password != old_password) || (wifi_config.sta.bssid != old_bssid)))
+                if (attemp_count < WIFI_connect_max_attemp_number)
                 {
-                    if (attemp_count < WIFI_connect_max_attemp_number)
-                    {
-                        esp_wifi_connect();
-                        attemp_count += 1;
-                        ESP_LOGE(__func__, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
-                    }
-                    else
-                    {
-                        memcpy(wifi_config.sta.ssid, old_ssid, sizeof(old_ssid));
-                        memcpy(wifi_config.sta.password, old_password, sizeof(old_password));
-                        ESP_LOGI(TAG, "Reconfigurating the previous AP: SSID: %s PASSWORDS: %s", wifi_config.sta.ssid, wifi_config.sta.password);
-                        memcpy(wifi_config.sta.bssid, old_bssid, sizeof(old_bssid));
-                        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-                        attemp_count += 1;
-                    }
-                    ESP_LOGI(TAG, "Connect to the new AP unsuccessfully");
+                    esp_wifi_connect();
+                    attemp_count += 1;
+                    ESP_LOGE(__func__, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
                 }
                 else
                 {
-                    if (change_AP == true)
-                    {
-                        ESP_LOGI(TAG, "The new AP is same to the previous AP");
-                        esp_wifi_disconnect();
-                        change_AP = false;
-                        memcpy(wifi_config.sta.ssid, old_ssid, sizeof(old_ssid));
-                        memcpy(wifi_config.sta.password, old_password, sizeof(old_password));
-                        memcpy(wifi_config.sta.bssid, old_bssid, sizeof(old_bssid));
-                        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-                    }
+                    memcpy(wifi_config.sta.ssid, old_ssid, sizeof(old_ssid));
+                    memcpy(wifi_config.sta.password, old_password, sizeof(old_password));
+                    ESP_LOGI(TAG, "Reconfigurating the previous AP: SSID: %s PASSWORDS: %s", wifi_config.sta.ssid, wifi_config.sta.password);
+                    memcpy(wifi_config.sta.bssid, old_bssid, sizeof(old_bssid));
+                    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+                    attemp_count += 1;
                 }
-                if ((change_AP == false) || (attemp_count > WIFI_connect_max_attemp_number))
+                ESP_LOGI(TAG, "Connect to the new AP unsuccessfully");
+            }
+            else
+            {
+                if (change_AP == true)
                 {
-                    if (change_AP == true)
-                    {
-                        ESP_LOGI(TAG, "Trying to reconnect to the previous AP");
-                        change_AP = false;
-                    }
+                    esp_wifi_disconnect();
+                    change_AP = false;
+                }
+            }
+            if ((change_AP == false) || (attemp_count > WIFI_connect_max_attemp_number))
+            {
+                if (change_AP == true)
+                {
+                    ESP_LOGI(TAG, "Trying to reconnect to the previous AP");
+                    change_AP = false;
+                }
 
-                    if (attemp_count_1 < WIFI_connect_max_attemp_number)
+                if (attemp_count_1 < WIFI_connect_max_attemp_number)
+                {
+                    esp_wifi_connect();
+                    attemp_count_1 += 1;
+                    ESP_LOGE(TAG, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
+                }
+                else
+                {
+                    ESP_LOGI(TAG, "Connect to the AP unsuccessfully. Smart Config again");
+                    if (esp_smartconfig_stop() == ESP_OK)
                     {
-                        esp_wifi_connect();
-                        attemp_count_1 += 1;
-                        ESP_LOGE(TAG, "Wi-Fi disconnected: Retrying connect to AP SSID:%s password:%s", wifi_config.sta.ssid, wifi_config.sta.password);
-                    }
-                    else
-                    {
-                        ESP_LOGI(TAG, "Connect to the AP unsuccessfully. Smart Config again");
-                        if (esp_smartconfig_stop() == ESP_OK)
-                        {
-                            esp_smartconfig_start(&smart_cfg);
-                        }
+                        esp_smartconfig_start(&smart_cfg);
                     }
                 }
             }
+
             break;
         }
         default:
@@ -484,7 +474,7 @@ void getDataFromSensor_task(void *parameters)
     {
         ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_init_desc(&ads111x_devices[i], addresses[i], CONFIG_ADS111X_I2C_PORT, CONFIG_ADS111X_I2C_MASTER_SDA, CONFIG_ADS111X_I2C_MASTER_SCL));
         moduleError.ads1115_1Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_mode(&ads111x_devices[i], ADS111X_MODE_CONTINUOUS));    // Continuous conversion mode
-        moduleError.ads1115_2Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_128)); // 128 samples per second
+        moduleError.ads1115_2Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_data_rate(&ads111x_devices[i], ADS111X_DATA_RATE_475)); // 128 samples per second
         moduleError.ads1115_3Error = ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_gain(&ads111x_devices[i], ads111x_gain_values[ADS111X_GAIN_2V048]));
         if (moduleError.ads1115_1Error != ESP_OK || moduleError.ads1115_2Error != ESP_OK || moduleError.ads1115_3Error != ESP_OK)
         {
@@ -514,7 +504,7 @@ void getDataFromSensor_task(void *parameters)
         {
 
             ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
-            ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH", "VOC1", "VOC2", "CH4", "H2S", "CO", "Odor", "NH3"));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH1", "EtOH2", "VOC1", "VOC2", "H2S", "CO", "Odor", "NH3"));
             //  Start cleaning sensor chamber
             gpio_set_level(RELAY_TRIGGER_PIN, 1); // Turn on relay to turn on fan
             ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
@@ -526,8 +516,9 @@ void getDataFromSensor_task(void *parameters)
                 ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
                 ui_begin_sampling_stage();
             }
+            gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
 
-            finishTime = xTaskGetTickCount() + SAMPLING_TIMME;
+            finishTime = xTaskGetTickCount() + SAMPLING_TIME;
             do
             {
                 task_lastWakeTime = xTaskGetTickCount();
@@ -549,7 +540,7 @@ void getDataFromSensor_task(void *parameters)
                         for (size_t n = 0; n < 2; n++)
                         {
                             ESP_ERROR_CHECK_WITHOUT_ABORT(ads111x_set_input_mux(&ads111x_devices[n], (ads111x_mux_t)(i + 4)));
-                            vTaskDelay(50 / portTICK_PERIOD_MS);
+                            vTaskDelay(35 / portTICK_PERIOD_MS);
                             int16_t ADC_rawData = 0;
                             if (ads111x_get_value(&ads111x_devices[n], &ADC_rawData) == ESP_OK)
                             {
@@ -582,7 +573,7 @@ void getDataFromSensor_task(void *parameters)
             ui_reset_before_measure_state();
             ui_show_measurement_result(nameFileSaveData);
             // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_12, 0)); // Turn off fan
-            gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
+            // gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
             ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
             xSemaphoreGive(monitor_temperature_humidity_semaphore);
         }
@@ -726,9 +717,9 @@ void app_main(void)
 
 #if CONFIG_USING_LCD_TFT
     ili9341_init();
-    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 15, NULL);
+    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 18, NULL);
     ui_init();
-
+    vTaskDelay(500 / portTICK_PERIOD_MS);
     if (moduleError.sdError == ESP_OK)
     {
         ui_update_device_icon_state(sdcard_icon, true);
@@ -749,17 +740,12 @@ void app_main(void)
     };
     ESP_LOGI(__func__, "Create dataSensorSentToSD Queue success.");
 
-    // Create task to get data from sensor (32Kb stack memory| priority 25(max))
-    // Period 5000ms
     xTaskCreate(getDataFromSensor_task, "GetDataSensor", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
 
-    // Create task to save data from sensor read by getDataFromSensor_task() to SD card (16Kb stack memory| priority 10)
-    // Period 5000ms
     xTaskCreate(saveDataSensorToSDcard_task, "SaveDataSensor", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
 
     xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
 
-    // Create task to control wifi by GUI (10Kb stack memory| priority 10)
     xTaskCreate(&wifi_control_task, "wifi control task", (10 * 1024), NULL, 10, NULL);
 
 #if CONFIG_USING_WIFI

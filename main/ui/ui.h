@@ -35,7 +35,7 @@ extern "C"
 
     // SCREEN: ui_mainscreen
     void ui_mainscreen_screen_init(void);
-    void ui_event_mainscreen(lv_event_t *e);
+    // void ui_event_mainscreen(lv_event_t *e);
     void ui_update_device_icon_state(lv_obj_t *TargetObject, bool state);
     void ui_begin_sampling_stage();
     void ui_update_temperature_humidity(float temperature, float humidity);
