@@ -93,7 +93,9 @@ extern "C"
     void ui_event_settingscreenMenu(lv_event_t *e);
     void ui_event_wifi_setting_onoff(lv_event_t *e);
     void ui_event_heating_setting_onoff(lv_event_t *e);
+    void ui_event_pump_setting_onoff(lv_event_t *e);
     void ui_wifi_setting_label_state_change(uint8_t state, char *str);
+    void ui_synchronize_pump_state(bool state);
     extern lv_obj_t *ui_settingscreenMenu;
     extern lv_obj_t *ui_settingtitleLabel;
     extern lv_obj_t *ui_wifi_setting_label;
@@ -104,6 +106,10 @@ extern "C"
     extern lv_obj_t *ui_heating_setting_onoff;
     extern lv_obj_t *ui_setting_heating_state_panel;
     extern lv_obj_t *ui_setting_heating_state_label;
+    extern lv_obj_t *ui_pump_setting_label;
+    extern lv_obj_t *ui_pump_setting_onoff;
+    extern lv_obj_t *ui_setting_pump_state_panel;
+    extern lv_obj_t *ui_setting_pump_state_label;
     // CUSTOM VARIABLES
 
     // EVENTS

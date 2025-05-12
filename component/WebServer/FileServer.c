@@ -64,8 +64,8 @@ esp_err_t http_response_dir_html(httpd_req_t *req, const char *dirpath)
     /* Send file-list table definition and column labels */
     httpd_resp_sendstr_chunk(req,
                              "<table class=\"fixed\" border=\"1\">"
-                             "<col width=\"800px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"100px\" />"
-                             "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr></thead>"
+                             "<col width=\"600px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"200px\" /><col width=\" 200px \" />"
+                             "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th><th>Download</th></tr></thead>"
                              "<tbody>");
 
     /* Iterate over all files / folders and fetch their names and sizes */
@@ -101,6 +101,10 @@ esp_err_t http_response_dir_html(httpd_req_t *req, const char *dirpath)
         httpd_resp_sendstr_chunk(req, req->uri);
         httpd_resp_sendstr_chunk(req, entry->d_name);
         httpd_resp_sendstr_chunk(req, "\"><button type=\"submit\">Delete</button></form>");
+        httpd_resp_sendstr_chunk(req, "</td><td><form method=\"post\" action=\"/downloads");
+        httpd_resp_sendstr_chunk(req, req->uri);
+        httpd_resp_sendstr_chunk(req, entry->d_name);
+        httpd_resp_sendstr_chunk(req, "\"><button type=\"submit\">Download</button></form>");
         httpd_resp_sendstr_chunk(req, "</td></tr>\n");
     }
     closedir(dir);
@@ -134,6 +138,10 @@ esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filename)
     else if (IS_FILE_EXT(filename, ".ico"))
     {
         return httpd_resp_set_type(req, "image/x-icon");
+    }
+    else if (IS_FILE_EXT(filename, ".csv"))
+    {
+        return httpd_resp_set_type(req, "text/csv");
     }
     /* This is a limited set only */
     /* For any other type always set as plain text */
@@ -173,7 +181,7 @@ const char *get_path_from_uri(char *dest, const char *base_path, const char *uri
 }
 
 /* Handler to download a file kept on the server */
-esp_err_t download_get_handler(httpd_req_t *req)
+esp_err_t display_content_handler(httpd_req_t *req)
 {
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
@@ -223,7 +231,7 @@ esp_err_t download_get_handler(httpd_req_t *req)
     }
 
     ESP_LOGI(__func__, "Sending file : %s (%ld bytes)...", filename, file_stat.st_size);
-    set_content_type_from_file(req, filename);
+    httpd_resp_set_type(req, "text/plain");
 
     /* Retrieve the pointer to scratch buffer for temporary storage */
     char *chunk = ((struct file_server_data *)req->user_ctx)->scratch;
@@ -310,6 +318,62 @@ esp_err_t delete_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+esp_err_t file_downloads_handler(httpd_req_t *req)
+{
+    char filepath[FILE_PATH_MAX];
+    struct stat file_stat;
+
+    const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,
+                                             req->uri + sizeof("/downloads") - 1, sizeof(filepath));
+    ESP_LOGI(__func__, "Filename: %s", filename);
+    if (!filename)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
+        return ESP_FAIL;
+    }
+
+    if (stat(filepath, &file_stat) == -1)
+    {
+        ESP_LOGE(__func__, "Failed to stat file : %s", filepath);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File does not exist");
+        return ESP_FAIL;
+    }
+
+    FILE *fd = fopen(filepath, "r");
+    if (!fd)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open file");
+        return ESP_FAIL;
+    }
+
+    // Set headers
+    char content_disposition[128];
+    snprintf(content_disposition, sizeof(content_disposition), "attachment; filename=\"%s\"", filename + 1);
+    httpd_resp_set_hdr(req, "Content-Disposition", content_disposition);
+    set_content_type_from_file(req, filename + 1);
+
+    char *chunk = ((struct file_server_data *)req->user_ctx)->scratch;
+    size_t chunksize;
+    do
+    {
+        chunksize = fread(chunk, 1, SCRATCH_BUFSIZE, fd);
+        if (chunksize > 0)
+        {
+            if (httpd_resp_send_chunk(req, chunk, chunksize) != ESP_OK)
+            {
+                fclose(fd);
+                httpd_resp_sendstr_chunk(req, NULL);
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
+                return ESP_FAIL;
+            }
+        }
+    } while (chunksize != 0);
+
+    fclose(fd);
+    httpd_resp_send_chunk(req, NULL, 0); // End response
+    return ESP_OK;
+}
+
 /* Function to start the file server */
 static struct file_server_data *server_data = NULL;
 esp_err_t start_file_server(httpd_handle_t *server, const char *base_path)
@@ -345,14 +409,14 @@ esp_err_t start_file_server(httpd_handle_t *server, const char *base_path)
         return ESP_FAIL;
     }
 
-    /* URI handler for getting uploaded files */
-    httpd_uri_t file_download = {
+    /* URI handler for showing uploaded files in webpage*/
+    httpd_uri_t file_content_display = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
-        .handler = download_get_handler,
+        .handler = display_content_handler,
         .user_ctx = server_data // Pass server data as context
     };
-    httpd_register_uri_handler(*server, &file_download);
+    httpd_register_uri_handler(*server, &file_content_display);
 
     /* URI handler for deleting files from server */
     httpd_uri_t file_delete = {
@@ -362,6 +426,15 @@ esp_err_t start_file_server(httpd_handle_t *server, const char *base_path)
         .user_ctx = server_data // Pass server data as context
     };
     httpd_register_uri_handler(*server, &file_delete);
+
+    /* URI handler for downloading uploaded files*/
+    httpd_uri_t file_downloads_from_server = {
+        .uri = "/downloads/*", // Match all URIs of type /download/path/to/file
+        .method = HTTP_POST,
+        .handler = file_downloads_handler,
+        .user_ctx = server_data // Pass server data as context
+    };
+    httpd_register_uri_handler(*server, &file_downloads_from_server);
 
     return ESP_OK;
 }

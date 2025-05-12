@@ -75,6 +75,7 @@ lv_obj_t *ui_settingscreen;
 void ui_event_settingscreenMenu(lv_event_t *e);
 void ui_event_wifi_setting_onoff(lv_event_t *e);
 void ui_event_heating_setting_onoff(lv_event_t *e);
+void ui_event_pump_setting_onoff(lv_event_t *e);
 void ui_wifi_setting_label_state_change(uint8_t state, char *str);
 lv_obj_t *ui_settingscreenMenu;
 lv_obj_t *ui_settingtitleLabel;
@@ -86,6 +87,10 @@ lv_obj_t *ui_heating_setting_label;
 lv_obj_t *ui_heating_setting_onoff;
 lv_obj_t *ui_setting_heating_state_panel;
 lv_obj_t *ui_setting_heating_state_label;
+lv_obj_t *ui_pump_setting_label;
+lv_obj_t *ui_pump_setting_onoff;
+lv_obj_t *ui_setting_pump_state_panel;
+lv_obj_t *ui_setting_pump_state_label;
 
 // EVENTS
 lv_obj_t *ui____initial_actions0;
@@ -195,6 +200,8 @@ void ui_event_measureBTN(lv_event_t *e)
         _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
         lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 130, LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_add_flag(ui_resultValue, LV_OBJ_FLAG_HIDDEN);
+        _ui_flag_modify(ui_pump_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
+        _ui_opacity_set(ui_pump_setting_onoff, 130);
         xEventGroupSetBits(measure_control_eventGroup, MEASURE_BIT);
     }
 }
@@ -209,7 +216,10 @@ void ui_reset_before_measure_state()
     lv_timer_handler();
     _ui_flag_modify(ui_heating_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
     lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 255, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    _ui_flag_modify(ui_pump_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
+    _ui_opacity_set(ui_pump_setting_onoff, 255);
     lv_timer_handler();
+    _ui_flag_modify(ui_pump_setting_onoff, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_ADD);
 }
 
 /**
@@ -364,6 +374,14 @@ void ui_wifi_setting_label_state_change(uint8_t state, char *str)
     }
 }
 
+/**
+ * @brief Handler for LV_EVENT_VALUE_CHANGED event on ui_heating_setting_onoff object
+ *
+ * When the user checks or unchecks the heating setting switch, this function is called.
+ * It updates the state label and enables/disables the "Measure" button.
+ * It also controls the heating by setting the corresponding output pin of the
+ * PCA8575 chip.
+ */
 void ui_event_heating_setting_onoff(lv_event_t *e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -385,6 +403,54 @@ void ui_event_heating_setting_onoff(lv_event_t *e)
             _ui_flag_modify(ui_measureBTN, LV_OBJ_FLAG_CLICKABLE, _UI_MODIFY_FLAG_REMOVE);
             _ui_opacity_set(ui_measureBTN, 130);
             pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_17, 0);
+        }
+    }
+}
+
+void ui_synchronize_pump_state(bool state)
+{
+    if (state == true)
+    {
+        lv_obj_add_state(ui_pump_setting_onoff, LV_STATE_CHECKED);
+        _ui_label_set_property(ui_setting_pump_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned on");
+        _ui_obj_set_style_text_color(ui_setting_pump_state_label, 0x000000);
+    }
+    else
+    {
+        lv_obj_clear_state(ui_pump_setting_onoff, LV_STATE_CHECKED);
+        _ui_label_set_property(ui_setting_pump_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned off");
+        _ui_obj_set_style_text_color(ui_setting_pump_state_label, 0xd92626);
+    }
+}
+
+/**
+ * @brief Handler for LV_EVENT_VALUE_CHANGED event on ui_pump_setting_onoff object
+ *
+ * This function is triggered when the pump setting switch is toggled.
+ * It updates the pump state label and changes the color of the text based on the switch state.
+ * It also controls the relay by setting the appropriate level to the RELAY_TRIGGER_PIN.
+ * When the switch is checked, the pump is turned on; otherwise, it is turned off.
+ *
+ * @param e Pointer to the LVGL event
+ */
+
+void ui_event_pump_setting_onoff(lv_event_t *e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if (event_code == LV_EVENT_VALUE_CHANGED)
+    {
+        if (lv_obj_has_state(ui_pump_setting_onoff, LV_STATE_CHECKED))
+        {
+            _ui_label_set_property(ui_setting_pump_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned on");
+            _ui_obj_set_style_text_color(ui_setting_pump_state_label, 0x000000);
+            gpio_set_level(RELAY_TRIGGER_PIN, 1);
+        }
+        else
+        {
+            _ui_label_set_property(ui_setting_pump_state_label, _UI_LABEL_PROPERTY_TEXT, "Turned off");
+            _ui_obj_set_style_text_color(ui_setting_pump_state_label, 0xd92626);
+            gpio_set_level(RELAY_TRIGGER_PIN, 0);
         }
     }
 }

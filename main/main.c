@@ -36,7 +36,6 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 
-#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "driver/i2c.h"
 #include "driver/spi_common.h"
@@ -71,8 +70,8 @@ __attribute__((unused)) static const char *TAG = "Main";
 
 #define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(500 / portTICK_PERIOD_MS)
 #define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
-#define SAMPLING_TIME (TickType_t)(300000 / portTICK_PERIOD_MS) // mili seconds
-#define CLEAN_CHAMBER_TIME (180)                                // seconds
+#define SAMPLING_TIME (TickType_t)(1800000 / portTICK_PERIOD_MS) // mili seconds
+#define CLEAN_CHAMBER_TIME (600)                                 // seconds
 
 #define NO_WAIT (TickType_t)(0)
 #define WAIT_10_TICK (TickType_t)(10 / portTICK_PERIOD_MS)
@@ -115,9 +114,6 @@ moduleError_st moduleError;
 const uint8_t addresses[CONFIG_ADS111X_DEVICE_COUNT] = {
     ADS111X_ADDR_SDA,
     ADS111X_ADDR_GND};
-
-// Define relay trigger pin
-#define RELAY_TRIGGER_PIN GPIO_NUM_25
 
 /*------------------------------------ WIFI ------------------------------------ */
 // Define Wi-Fi
@@ -401,6 +397,19 @@ void IRAM_ATTR clean_chamber_Timer_ISR_handler(gptimer_handle_t timer, const gpt
     gptimer_stop(clean_chamber_Timer);
 }
 
+/**
+ * @brief Task to continuously read temperature and humidity from the sensor
+ *        and update the UI with the latest values.
+ *
+ * This task runs indefinitely, waiting for access to the temperature and
+ * humidity monitor semaphore. Once access is granted, it measures the
+ * temperature and humidity using the SHT3x sensor and updates the UI with
+ * these values. The semaphore is then released, and the task delays for 2
+ * seconds before attempting to read the sensor again.
+ *
+ * @param parameters Pointer to parameters passed to the task (unused).
+ */
+
 void readSenorChamberTemperature_task(void *parameters)
 {
     struct dataSensor_st dataSensorTemp = {0};
@@ -411,14 +420,14 @@ void readSenorChamberTemperature_task(void *parameters)
         {
             sht3x_measure(&sht30_sensor, &dataSensorTemp.temperature, &dataSensorTemp.humidity);
             ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
-            xSemaphoreGive(monitor_temperature_humidity_semaphore);
             ESP_LOGI("HEAP", "Free heap size: %" PRIu32 " bytes", esp_get_free_heap_size());
+            xSemaphoreGive(monitor_temperature_humidity_semaphore);
             vTaskDelay(2000 / portTICK_PERIOD_MS);
         }
     }
 }
 
-void getDataFromSensor_task(void *parameters)
+void sampling_process_task(void *parameters)
 {
     struct dataSensor_st dataSensorTemp = {0};
     TickType_t task_lastWakeTime;
@@ -494,7 +503,6 @@ void getDataFromSensor_task(void *parameters)
     }
     for (;;)
     {
-        // xTaskNotifyWait(0x00, ULONG_MAX, NULL, portMAX_DELAY);
         EventBits_t bits = xEventGroupWaitBits(measure_control_eventGroup, MEASURE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
         if (bits & MEASURE_BIT)
         {
@@ -506,7 +514,12 @@ void getDataFromSensor_task(void *parameters)
             ESP_ERROR_CHECK_WITHOUT_ABORT(ds3231_convertTimeToString(&ds3231_device, nameFileSaveData, 14));
             ESP_ERROR_CHECK_WITHOUT_ABORT(sdcard_writeDataToFile(nameFileSaveData, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "TimeStamp", "Temperature", "Humidity", "EtOH1", "EtOH2", "VOC1", "VOC2", "H2S", "CO", "Odor", "NH3"));
             //  Start cleaning sensor chamber
-            gpio_set_level(RELAY_TRIGGER_PIN, 1); // Turn on relay to turn on fan
+            if (gpio_get_level(RELAY_TRIGGER_PIN) == 0)
+            {
+                gpio_set_level(RELAY_TRIGGER_PIN, 1); // Turn on relay to turn off fan
+                ui_synchronize_pump_state(true);
+            }
+
             ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
             // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_13, 1)); // Turn on fan
             ESP_LOGI(__func__, "Start cleaning sensor chamber.");
@@ -516,7 +529,9 @@ void getDataFromSensor_task(void *parameters)
                 ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
                 ui_begin_sampling_stage();
             }
+
             gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
+            ui_synchronize_pump_state(false);
 
             finishTime = xTaskGetTickCount() + SAMPLING_TIME;
             do
@@ -531,10 +546,6 @@ void getDataFromSensor_task(void *parameters)
                     ESP_LOGI(__func__, "Temperature: %f, Humidity: %f", dataSensorTemp.temperature, dataSensorTemp.humidity);
                     ui_update_temperature_humidity(dataSensorTemp.temperature, dataSensorTemp.humidity);
 
-                    /**
-                     * @brief Solution 1: Reading data form 4 ADC channels of ADS1115(0) and then, reading 4 chanel ADC of ADS1115(1).
-                     *
-                     */
                     for (size_t i = 0; i < 4; i++)
                     {
                         for (size_t n = 0; n < 2; n++)
@@ -586,7 +597,7 @@ void getDataFromSensor_task(void *parameters)
  *
  * @param parameters
  */
-void saveDataSensorToSDcard_task(void *parameters)
+void saveSensorDataToSDcard_task(void *parameters)
 {
     UBaseType_t message_stored = 0;
     struct dataSensor_st dataSensorReceiveFromQueue;
@@ -740,11 +751,11 @@ void app_main(void)
     };
     ESP_LOGI(__func__, "Create dataSensorSentToSD Queue success.");
 
-    xTaskCreate(getDataFromSensor_task, "GetDataSensor", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
+    xTaskCreate(sampling_process_task, "Sampling task", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
 
-    xTaskCreate(saveDataSensorToSDcard_task, "SaveDataSensor", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
+    xTaskCreate(saveSensorDataToSDcard_task, "Save Sensor Data To SDcard task", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
 
-    xTaskCreate(&readSenorChamberTemperature_task, "temperature monitor task", 10 * 1024, NULL, 11, NULL);
+    xTaskCreate(&readSenorChamberTemperature_task, "Temperature monitor task", 10 * 1024, NULL, 11, NULL);
 
     xTaskCreate(&wifi_control_task, "wifi control task", (10 * 1024), NULL, 10, NULL);
 

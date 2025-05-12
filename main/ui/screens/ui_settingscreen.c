@@ -134,7 +134,52 @@ void ui_settingscreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_heating_setting_onoff, lv_color_hex(0x34C759), LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_set_style_bg_opa(ui_heating_setting_onoff, 255, LV_PART_INDICATOR | LV_STATE_CHECKED);
 
+    ui_pump_setting_label = lv_label_create(ui_settingscreen);
+    lv_obj_set_width(ui_pump_setting_label, LV_SIZE_CONTENT);
+    lv_obj_set_height(ui_pump_setting_label, LV_SIZE_CONTENT);
+    lv_obj_set_x(ui_pump_setting_label, 8);
+    lv_obj_set_y(ui_pump_setting_label, 153);
+    lv_obj_set_align(ui_pump_setting_label, LV_ALIGN_TOP_LEFT);
+    lv_label_set_text(ui_pump_setting_label, "Air pump:");
+
+    ui_setting_pump_state_panel = lv_obj_create(ui_settingscreen);
+    lv_obj_remove_style_all(ui_setting_pump_state_panel);
+    lv_obj_set_width(ui_setting_pump_state_panel, 225);
+    lv_obj_set_height(ui_setting_pump_state_panel, 23);
+    lv_obj_set_x(ui_setting_pump_state_panel, 0);
+    lv_obj_set_y(ui_setting_pump_state_panel, 22);
+    lv_obj_set_align(ui_setting_pump_state_panel, LV_ALIGN_CENTER);
+    lv_obj_clear_flag(ui_setting_pump_state_panel, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ui_setting_pump_state_panel, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_setting_pump_state_panel, lv_color_hex(0xDBDBDB), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_setting_pump_state_panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui_setting_pump_state_panel, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(ui_setting_pump_state_panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_setting_pump_state_panel, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_setting_pump_state_label = lv_label_create(ui_setting_pump_state_panel);
+    lv_obj_set_width(ui_setting_pump_state_label, LV_SIZE_CONTENT);
+    lv_obj_set_height(ui_setting_pump_state_label, LV_SIZE_CONTENT);
+    lv_obj_set_align(ui_setting_pump_state_label, LV_ALIGN_CENTER);
+    lv_label_set_text(ui_setting_pump_state_label, "Turned off");
+    lv_obj_set_style_text_color(ui_setting_pump_state_label, lv_color_hex(0xd92626), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_opa(ui_setting_pump_state_label, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_setting_pump_state_label, &lv_font_montserrat_12, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_pump_setting_onoff = lv_switch_create(ui_settingscreen);
+    lv_obj_set_width(ui_pump_setting_onoff, 30);
+    lv_obj_set_height(ui_pump_setting_onoff, 15);
+    lv_obj_set_x(ui_pump_setting_onoff, 140);
+    lv_obj_set_y(ui_pump_setting_onoff, 153);
+    lv_obj_set_align(ui_pump_setting_onoff, LV_ALIGN_TOP_LEFT);
+    lv_obj_set_style_border_color(ui_pump_setting_onoff, lv_color_hex(0xBDB395), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(ui_pump_setting_onoff, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_pump_setting_onoff, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_pump_setting_onoff, lv_color_hex(0x34C759), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(ui_pump_setting_onoff, 255, LV_PART_INDICATOR | LV_STATE_CHECKED);
+
     lv_obj_add_event_cb(ui_wifi_setting_onoff, ui_event_wifi_setting_onoff, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(ui_heating_setting_onoff, ui_event_heating_setting_onoff, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(ui_pump_setting_onoff, ui_event_pump_setting_onoff, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(ui_settingscreenMenu, ui_event_settingscreenMenu, LV_EVENT_ALL, NULL);
 }
