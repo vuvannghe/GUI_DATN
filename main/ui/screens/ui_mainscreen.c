@@ -270,7 +270,7 @@ void ui_mainscreen_screen_init(void)
     lv_obj_set_x(ui_measureState, 5);
     lv_obj_set_y(ui_measureState, 60);
     lv_obj_set_align(ui_measureState, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_measureState, "Start sampling");
+    lv_label_set_text(ui_measureState, "Sampling");
     lv_obj_add_flag(ui_measureState, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_color(ui_measureState, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_measureState, 255, LV_PART_MAIN | LV_STATE_DEFAULT);

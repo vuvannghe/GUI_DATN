@@ -68,10 +68,12 @@ extern "C"
     extern lv_obj_t *ui_mainscreenMenu;
     extern lv_obj_t *ui_measureState;
     extern lv_obj_t *ui_loadingSpinner;
+    void ui_error_notify_screen();
     // CUSTOM VARIABLES
 
     // SCREEN: ui_aboutscreen
-    void ui_aboutscreen_screen_init(void);
+    void
+    ui_aboutscreen_screen_init(void);
     extern lv_obj_t *ui_aboutscreen;
     void ui_event_aboutscreenMenu(lv_event_t *e);
     extern lv_obj_t *ui_aboutscreenMenu;

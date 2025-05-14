@@ -70,8 +70,8 @@ __attribute__((unused)) static const char *TAG = "Main";
 
 #define PERIOD_GET_DATA_FROM_SENSOR (TickType_t)(500 / portTICK_PERIOD_MS)
 #define PERIOD_SAVE_DATA_SENSOR_TO_SDCARD (TickType_t)(50 / portTICK_PERIOD_MS)
-#define SAMPLING_TIME (TickType_t)(1800000 / portTICK_PERIOD_MS) // mili seconds
-#define CLEAN_CHAMBER_TIME (600)                                 // seconds
+#define SAMPLING_TIME (TickType_t)(2400000 / portTICK_PERIOD_MS) // mili seconds
+#define CLEAN_CHAMBER_TIME (10)                                  // seconds
 
 #define NO_WAIT (TickType_t)(0)
 #define WAIT_10_TICK (TickType_t)(10 / portTICK_PERIOD_MS)
@@ -476,6 +476,10 @@ void sampling_process_task(void *parameters)
     {
         ui_update_device_icon_state(temp_sensor_icon, true);
     }
+    else
+    {
+        ui_error_notify_screen();
+    }
     // Setup for ADS1115
     moduleError.isads1115Error = true;
     memset(ads111x_devices, 0, sizeof(ads111x_devices));
@@ -520,18 +524,18 @@ void sampling_process_task(void *parameters)
                 ui_synchronize_pump_state(true);
             }
 
-            ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
+            // ESP_ERROR_CHECK(gptimer_start(clean_chamber_Timer));
             // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_13, 1)); // Turn on fan
-            ESP_LOGI(__func__, "Start cleaning sensor chamber.");
+            // ESP_LOGI(__func__, "Start cleaning sensor chamber.");
 
-            if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
-            {
-                ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
-                ui_begin_sampling_stage();
-            }
+            // if (xSemaphoreTake(stop_clean_chamber_semaphore, portMAX_DELAY) == pdTRUE)
+            // {
+            //     ESP_LOGI(__func__, "Stop cleaning sensor chamber. Start sampling stage.");
+            //     ui_begin_sampling_stage();
+            // }
 
-            gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
-            ui_synchronize_pump_state(false);
+            // gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
+            // ui_synchronize_pump_state(false);
 
             finishTime = xTaskGetTickCount() + SAMPLING_TIME;
             do
@@ -585,6 +589,8 @@ void sampling_process_task(void *parameters)
             ui_show_measurement_result(nameFileSaveData);
             // ESP_ERROR_CHECK_WITHOUT_ABORT(pcf8575_pin_write(&pcf8575_device, PCF8575_GPIO_PIN_12, 0)); // Turn off fan
             // gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
+            gpio_set_level(RELAY_TRIGGER_PIN, 0); // Turn off relay to turn off fan
+            ui_synchronize_pump_state(false);
             ESP_LOGI(__func__, "Stop measurement process. Start data analysis process");
             xSemaphoreGive(monitor_temperature_humidity_semaphore);
         }
@@ -728,12 +734,16 @@ void app_main(void)
 
 #if CONFIG_USING_LCD_TFT
     ili9341_init();
-    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 10 * 1024, NULL, 18, NULL);
+    xTaskCreate(&lvgl_timer_handle_task, "LVGL timer handle task", 15 * 1024, NULL, 18, NULL);
     ui_init();
     vTaskDelay(500 / portTICK_PERIOD_MS);
     if (moduleError.sdError == ESP_OK)
     {
         ui_update_device_icon_state(sdcard_icon, true);
+    }
+    else
+    {
+        ui_error_notify_screen();
     }
 #endif // CONFIG_USING_LCD_TFT
 
@@ -751,9 +761,9 @@ void app_main(void)
     };
     ESP_LOGI(__func__, "Create dataSensorSentToSD Queue success.");
 
-    xTaskCreate(sampling_process_task, "Sampling task", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
+    xTaskCreate(&sampling_process_task, "Sampling task", (1024 * 33), NULL, (UBaseType_t)25, &getDataFromSensorTask_handle);
 
-    xTaskCreate(saveSensorDataToSDcard_task, "Save Sensor Data To SDcard task", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
+    xTaskCreate(&saveSensorDataToSDcard_task, "Save Sensor Data To SDcard task", (1024 * 16), NULL, (UBaseType_t)19, &saveDataSensorToSDcardTask_handle);
 
     xTaskCreate(&readSenorChamberTemperature_task, "Temperature monitor task", 10 * 1024, NULL, 11, NULL);
 
